@@ -195,7 +195,7 @@ static rlm_rcode_t mod_process(void *instance, UNUSED void *thread, REQUEST *req
 	eap_tls_status_t	status;
 
 	rlm_eap_tls_t		*inst = talloc_get_type_abort(instance, rlm_eap_tls_t);
-	eap_session_t		*eap_session = eap_session_get(request);
+	eap_session_t		*eap_session = eap_session_get(request->parent);
 	eap_tls_session_t	*eap_tls_session = talloc_get_type_abort(eap_session->opaque, eap_tls_session_t);
 	tls_session_t		*tls_session = eap_tls_session->tls_session;
 
@@ -256,7 +256,7 @@ static rlm_rcode_t mod_process(void *instance, UNUSED void *thread, REQUEST *req
 static rlm_rcode_t mod_session_init(void *instance, UNUSED void *thread, REQUEST *request)
 {
 	rlm_eap_tls_t		*inst = talloc_get_type_abort(instance, rlm_eap_tls_t);
-	eap_session_t		*eap_session = eap_session_get(request);
+	eap_session_t		*eap_session = eap_session_get(request->parent);
 	eap_tls_session_t	*eap_tls_session;
 
 	VALUE_PAIR		*vp;
@@ -361,7 +361,7 @@ static int mod_namespace_load(CONF_SECTION *server_cs)
 
 static int mod_load(void)
 {
-	if (virtual_server_namespace_register("eap-tls", mod_namespace_load) < 0) return -1;
+	if (virtual_namespace_register("eap-tls", "eap-tls", NULL, mod_namespace_load) < 0) return -1;
 
 	return 0;
 }

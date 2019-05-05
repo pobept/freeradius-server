@@ -131,7 +131,7 @@ static rlm_rcode_t mod_process(void *instance, UNUSED void *thread, REQUEST *req
 	eap_tls_status_t	status;
 
 	rlm_eap_peap_t		*inst = talloc_get_type(instance, rlm_eap_peap_t);
-	eap_session_t		*eap_session = eap_session_get(request);
+	eap_session_t		*eap_session = eap_session_get(request->parent);
 	eap_tls_session_t	*eap_tls_session = talloc_get_type_abort(eap_session->opaque, eap_tls_session_t);
 	tls_session_t		*tls_session = eap_tls_session->tls_session;
 	peap_tunnel_t		*peap = NULL;
@@ -256,7 +256,7 @@ static rlm_rcode_t mod_process(void *instance, UNUSED void *thread, REQUEST *req
 static rlm_rcode_t mod_session_init(void *instance, UNUSED void *thread, REQUEST *request)
 {
 	rlm_eap_peap_t		*inst = talloc_get_type_abort(instance, rlm_eap_peap_t);
-	eap_session_t		*eap_session = eap_session_get(request);
+	eap_session_t		*eap_session = eap_session_get(request->parent);
 	eap_tls_session_t	*eap_tls_session;
 
 	VALUE_PAIR		*vp;

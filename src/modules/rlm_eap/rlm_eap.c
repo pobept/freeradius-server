@@ -81,6 +81,7 @@ fr_dict_autoload_t rlm_eap_dict[] = {
 
 static fr_dict_attr_t const *attr_auth_type;
 static fr_dict_attr_t const *attr_eap_type;
+static fr_dict_attr_t const *attr_eap_identity;
 
 static fr_dict_attr_t const *attr_cisco_avpair;
 static fr_dict_attr_t const *attr_eap_message;
@@ -92,6 +93,7 @@ extern fr_dict_attr_autoload_t rlm_eap_dict_attr[];
 fr_dict_attr_autoload_t rlm_eap_dict_attr[] = {
 	{ .out = &attr_auth_type, .name = "Auth-Type", .type = FR_TYPE_UINT32, .dict = &dict_freeradius },
 	{ .out = &attr_eap_type, .name = "EAP-Type", .type = FR_TYPE_UINT32, .dict = &dict_freeradius },
+	{ .out = &attr_eap_identity, .name = "EAP-Identity", .type = FR_TYPE_STRING, .dict = &dict_freeradius },
 
 	{ .out = &attr_cisco_avpair, .name = "Cisco-AvPair", .type = FR_TYPE_STRING, .dict = &dict_radius },
 	{ .out = &attr_eap_message, .name = "EAP-Message", .type = FR_TYPE_OCTETS, .dict = &dict_radius },
@@ -313,6 +315,36 @@ static eap_type_t eap_process_nak(rlm_eap_t *inst, REQUEST *request,
 	return method;
 }
 
+/** Cancel a call to a submodule
+ *
+ * @param[in] request	The current request.
+ * @param[in] instance	UNUSED.
+ * @param[in] thread	UNUSED.
+ * @param[in] rctx	the eap_session_t
+ * @param[in] action	to perform.
+ */
+static void mod_authenticate_cancel(UNUSED void *instance, UNUSED void *thread, REQUEST *request, void *rctx,
+				    fr_state_signal_t action)
+{
+	eap_session_t	*eap_session;
+
+	if (action != FR_SIGNAL_CANCEL) return;
+
+	RDEBUG2("Request cancelled - Destroying EAP-Session");
+
+	eap_session = talloc_get_type_abort(rctx, eap_session_t);
+
+	(void)fr_cond_assert(request_detach(eap_session->subrequest, true) == 0);
+	TALLOC_FREE(eap_session->subrequest);
+
+	/*
+	 *	This is the only safe thing to do.
+	 *	We have no idea what state the submodule
+	 *	left its opaque data in.
+	 */
+	eap_session_destroy(&eap_session);
+}
+
 /** Process the result of calling a submodule
  *
  * @param[in] request	The current request.
@@ -326,10 +358,17 @@ static eap_type_t eap_process_nak(rlm_eap_t *inst, REQUEST *request,
  *	- RLM_MODULE_HANDLED	if we're done with this round.
  *	- RLM_MODULE_REJECT	if the user should be rejected.
  */
-static rlm_rcode_t mod_authenticate_result(REQUEST *request, UNUSED void *instance, UNUSED void *thread,
+static rlm_rcode_t mod_authenticate_result(REQUEST *request, void *instance, UNUSED void *thread,
 					   eap_session_t *eap_session, rlm_rcode_t result)
 {
-	rlm_rcode_t		rcode;
+	rlm_rcode_t	rcode;
+
+	/*
+	 *	Cleanup the subrequest
+	 */
+	fr_state_store_in_parent(eap_session->subrequest, instance, 0);
+	(void)fr_cond_assert(request_detach(eap_session->subrequest, true) == 0);
+	TALLOC_FREE(eap_session->subrequest);
 
 	/*
 	 *	The submodule failed.  Die.
@@ -420,33 +459,6 @@ static rlm_rcode_t mod_authenticate_result_async(void *instance, void *thread, R
 	eap_session_t	*eap_session = talloc_get_type_abort(rctx, eap_session_t);
 
 	return mod_authenticate_result(request, instance, thread, eap_session, eap_session->submodule_rcode);
-}
-
-/** Cancel a call to a submodule
- *
- * @param[in] request	The current request.
- * @param[in] instance	UNUSED.
- * @param[in] thread	UNUSED.
- * @param[in] rctx	the eap_session_t
- * @param[in] action	to perform.
- */
-static void mod_authenticate_cancel(UNUSED void *instance, UNUSED void *thread, REQUEST *request, void *rctx,
-				    fr_state_signal_t action)
-{
-	eap_session_t	*eap_session;
-
-	if (action != FR_SIGNAL_CANCEL) return;
-
-	RDEBUG2("Request cancelled - Destroying EAP-Session");
-
-	eap_session = talloc_get_type_abort(rctx, eap_session_t);
-
-	/*
-	 *	This is the only safe thing to do.
-	 *	We have no idea what state the submodule
-	 *	left its opaque data in.
-	 */
-	eap_session_destroy(&eap_session);
 }
 
 /** Select the correct callback based on a response
@@ -580,17 +592,40 @@ module_call:
 
 	RDEBUG2("Calling submodule %s", method->submodule->name);
 
-	unlang_module_yield(request, mod_authenticate_result_async, mod_authenticate_cancel, eap_session);
+	/*
+	 *	Allocate a new subrequest
+	 */
+	MEM(eap_session->subrequest = unlang_module_subrequest_alloc(request,
+								     method->submodule->namespace ?
+								     *(method->submodule->namespace) :
+								     request->dict));
 
 	/*
-	 *	If we really want to, we can do all this on the C stack later...
-	 *	We just need to push equivalent calls into unlang in case the
-	 *	submodule yields.
+	 *	Restore session-state and request data from the parent to the child
 	 */
-	unlang_module_push(&eap_session->submodule_rcode, request,
-			   method->submodule_inst, eap_session->process, false);
+	fr_state_restore_to_child(eap_session->subrequest, inst, 0);
 
-	return RLM_MODULE_YIELD;
+	/*
+	 *	Push the submodule into the child's stack
+	 */
+	unlang_module_push(NULL,	/* rcode should bubble up and be returned by yield_to_subrequest */
+			   eap_session->subrequest, method->submodule_inst, eap_session->process, true);
+
+	if (eap_session->identity) {
+		VALUE_PAIR	*identity;
+
+		request = eap_session->subrequest;	/* Set request for pair_add_request macro */
+
+		MEM(pair_add_request(&identity, attr_eap_identity) >= 0);
+		fr_pair_value_bstrncpy(identity, eap_session->identity, talloc_array_length(eap_session->identity) - 1);
+	}
+
+	/*
+	 *	Yield to the subrequest, and start executing it
+	 */
+	return unlang_module_yield_to_subrequest(&eap_session->submodule_rcode, eap_session->subrequest,
+						 mod_authenticate_result_async, mod_authenticate_cancel,
+						 eap_session);
 }
 
 static rlm_rcode_t mod_authenticate(void *instance, void *thread, REQUEST *request)

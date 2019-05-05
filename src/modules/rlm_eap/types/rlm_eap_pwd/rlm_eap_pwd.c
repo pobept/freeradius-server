@@ -157,7 +157,7 @@ static int send_pwd_request(REQUEST *request, pwd_session_t *session, eap_round_
 static rlm_rcode_t mod_process(void *instance, UNUSED void *thread, REQUEST *request)
 {
 	rlm_eap_pwd_t	*inst = talloc_get_type_abort(instance, rlm_eap_pwd_t);
-	eap_session_t	*eap_session = eap_session_get(request);
+	eap_session_t	*eap_session = eap_session_get(request->parent);
 
 	pwd_session_t	*session;
 
@@ -484,7 +484,7 @@ static int _free_pwd_session(pwd_session_t *session)
 static rlm_rcode_t mod_session_init(void *instance, UNUSED void *thread, REQUEST *request)
 {
 	rlm_eap_pwd_t		*inst = talloc_get_type_abort(instance, rlm_eap_pwd_t);
-	eap_session_t		*eap_session = eap_session_get(request);
+	eap_session_t		*eap_session = eap_session_get(request->parent);
 	pwd_session_t		*session;
 	VALUE_PAIR		*vp;
 	pwd_id_packet_t		*packet;

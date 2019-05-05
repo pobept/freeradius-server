@@ -53,7 +53,7 @@ static rlm_rcode_t mod_process(UNUSED void *instance, UNUSED void *thread, REQUE
 {
 	rlm_rcode_t	rcode;
 
-	eap_session_t	*eap_session = eap_session_get(request);
+	eap_session_t	*eap_session = eap_session_get(request->parent);
 	leap_session_t	*session;
 	leap_packet_t	*packet;
 	leap_packet_t	*reply;
@@ -161,7 +161,7 @@ static rlm_rcode_t mod_process(UNUSED void *instance, UNUSED void *thread, REQUE
  */
 static rlm_rcode_t CC_HINT(nonnull) mod_session_init(UNUSED void *instance, UNUSED void *thread, REQUEST *request)
 {
-	eap_session_t	*eap_session = eap_session_get(request);
+	eap_session_t	*eap_session = eap_session_get(request->parent);
 	leap_session_t	*session;
 	leap_packet_t	*reply;
 

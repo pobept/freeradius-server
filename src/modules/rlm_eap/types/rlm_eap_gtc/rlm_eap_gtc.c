@@ -102,7 +102,7 @@ static rlm_rcode_t mod_process_auth_type(UNUSED void *instance, UNUSED void *thr
 {
 	rlm_rcode_t	rcode;
 
-	eap_session_t	*eap_session = eap_session_get(request);
+	eap_session_t	*eap_session = eap_session_get(request->parent);
 	eap_round_t	*eap_round = eap_session->this_round;
 
 	rcode = unlang_interpret_resume(request);
@@ -128,7 +128,7 @@ static rlm_rcode_t mod_process(void *instance, void *thread, REQUEST *request)
 	rlm_rcode_t	rcode;
 
 	rlm_eap_gtc_t	*inst = talloc_get_type_abort(instance, rlm_eap_gtc_t);
-	eap_session_t	*eap_session = eap_session_get(request);
+	eap_session_t	*eap_session = eap_session_get(request->parent);
 	eap_round_t	*eap_round = eap_session->this_round;
 
 	VALUE_PAIR	*vp;
@@ -200,7 +200,7 @@ static rlm_rcode_t mod_process(void *instance, void *thread, REQUEST *request)
  */
 static rlm_rcode_t mod_session_init(void *instance, UNUSED void *thread, REQUEST *request)
 {
-	eap_session_t	*eap_session = eap_session_get(request);
+	eap_session_t	*eap_session = eap_session_get(request->parent);
 	char		challenge_str[1024];
 	int		length;
 	eap_round_t	*eap_round = eap_session->this_round;
