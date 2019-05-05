@@ -29,11 +29,12 @@ RCSID("$Id$")
 #include <freeradius-devel/eap/base.h>
 #include <freeradius-devel/eap/types.h>
 #include <freeradius-devel/server/rad_assert.h>
-#include <freeradius-devel/sim/base.h>
+#include <freeradius-devel/eap_aka_sim/base.h>
 #include <freeradius-devel/unlang/compile.h>
+#include <freeradius-devel/unlang/module.h>
 
-#include <freeradius-devel/protocol/eap/aka/freeradius.h>
-#include <freeradius-devel/protocol/eap/aka/rfc4187.h>
+#include <freeradius-devel/protocol/eap/aka-sim/freeradius.h>
+#include <freeradius-devel/protocol/eap/aka-sim/rfc4187.h>
 
 #include "eap_aka.h"
 
@@ -41,13 +42,41 @@ RCSID("$Id$")
 #  define EAP_TLS_MPPE_KEY_LEN     32
 #endif
 
-static FR_NAME_NUMBER const aka_state_table[] = {
-	{ "IDENTITY",				EAP_AKA_SERVER_IDENTITY				},
-	{ "CHALLENGE",				EAP_AKA_SERVER_CHALLENGE			},
-	{ "SUCCESS-NOTIFICATION",		EAP_AKA_SERVER_SUCCESS_NOTIFICATION 		},
-	{ "SUCCESS",				EAP_AKA_SERVER_SUCCESS				},
-	{ "FAILURE-NOTIFICATION",		EAP_AKA_SERVER_FAILURE_NOTIFICATION		},
-	{ "FAILURE",				EAP_AKA_SERVER_FAILURE				},
+/** A state transition function
+ *
+ * This is passed to sub-state machines that perform other actions, before
+ * fully transitioning to a new AKA state.
+ *
+ * Examples of these are the sub-state machines that deal with clearing
+ * pseudonyms and reauthentication data.
+ */
+typedef rlm_rcode_t(*aka_state_enter_t)(rlm_eap_aka_t *inst, REQUEST *request, eap_session_t *eap_session);
+
+static rlm_rcode_t aka_eap_failure(void *instance, void *thread, REQUEST *request);
+static rlm_rcode_t aka_failure_notification(void *instance, void *thread, REQUEST *request);
+static rlm_rcode_t aka_eap_success(void *instance, void *thread, REQUEST *request);
+static rlm_rcode_t aka_success_notification(void *instance, void *thread, REQUEST *request);
+static rlm_rcode_t aka_reauthentication(void *instance, void *thread, REQUEST *request);
+static rlm_rcode_t aka_challenge(void *instance, void *thread, REQUEST *request);
+static rlm_rcode_t aka_identity(void *instance, void *thread, REQUEST *request);
+static rlm_rcode_t aka_eap_identity(void *instance, void *thread, REQUEST *request);
+
+static rlm_rcode_t aka_failure_notification_enter(rlm_eap_aka_t *inst,
+						  REQUEST *request, eap_session_t *eap_session);
+static rlm_rcode_t aka_challenge_enter(rlm_eap_aka_t *inst,
+				       REQUEST *request, eap_session_t *eap_session);
+static rlm_rcode_t aka_identity_enter(rlm_eap_aka_t *inst, REQUEST *request, eap_session_t *eap_session);
+
+static module_state_func_table_t const aka_state_table[] = {
+	{ "AKA-FAILURE-NOTIFICATION",	aka_failure_notification	},
+	{ "EAP-FAILURE",		aka_eap_failure			},
+	{ "AKA-SUCCESS-NOTIFICATION",	aka_success_notification 	},
+	{ "EAP-SUCCESS",		aka_eap_success			},
+	{ "AKA-REAUTHENTICATION",	aka_reauthentication		},
+	{ "AKA-CHALLENGE",		aka_challenge			},
+	{ "AKA-IDENTITY",		aka_identity			},
+	{ "EAP-IDENTITY",		aka_eap_identity		},
+
 	{ NULL }
 };
 
@@ -56,73 +85,114 @@ static int virtual_server_parse(TALLOC_CTX *ctx, void *out, void *parent,
 				CONF_ITEM *ci, UNUSED CONF_PARSER const *rule);
 
 static CONF_PARSER submodule_config[] = {
-	{ FR_CONF_OFFSET("network_name", FR_TYPE_STRING | FR_TYPE_REQUIRED, rlm_eap_aka_t, network_name ) },
-	{ FR_CONF_OFFSET("request_identity", FR_TYPE_BOOL, rlm_eap_aka_t, request_identity ), .dflt = "no" },
+	{ FR_CONF_OFFSET("network_name", FR_TYPE_STRING, rlm_eap_aka_t, network_name ) },
+	{ FR_CONF_OFFSET("request_identity", FR_TYPE_BOOL, rlm_eap_aka_t, request_identity ),
+			 .func = cf_table_parse_uint32, .uctx = fr_aka_sim_id_request_table },
+	{ FR_CONF_OFFSET("ephemeral_id_length", FR_TYPE_UINT8, rlm_eap_aka_t, ephemeral_id_length ), .dflt = "14" },	/* 14 for compatibility */
 	{ FR_CONF_OFFSET("protected_success", FR_TYPE_BOOL, rlm_eap_aka_t, protected_success ), .dflt = "no" },
-	{ FR_CONF_OFFSET("virtual_server", FR_TYPE_VOID, rlm_eap_aka_t, actions), .func = virtual_server_parse },
+	{ FR_CONF_OFFSET("prefer_aka_prime", FR_TYPE_BOOL, rlm_eap_aka_t, send_at_bidding_prefer_prime ), .dflt = "yes" },
+	{ FR_CONF_OFFSET("virtual_server", FR_TYPE_VOID, rlm_eap_aka_t, virtual_server), .func = virtual_server_parse },
 	CONF_PARSER_TERMINATOR
 };
 
 static fr_dict_t *dict_freeradius;
 static fr_dict_t *dict_radius;
-static fr_dict_t *dict_eap_aka;
+static fr_dict_t *dict_eap_aka_sim;
 
 extern fr_dict_autoload_t rlm_eap_aka_dict[];
 fr_dict_autoload_t rlm_eap_aka_dict[] = {
 	{ .out = &dict_freeradius, .proto = "freeradius" },
 	{ .out = &dict_radius, .proto = "radius" },
-	{ .out = &dict_eap_aka, .proto = "eap-aka", .base_dir = "eap/aka" },
+	{ .out = &dict_eap_aka_sim, .base_dir="eap/aka-sim", .proto = "eap-aka-sim"  },
 	{ NULL }
 };
 
-static fr_dict_attr_t const *attr_eap_aka_subtype;
-static fr_dict_attr_t const *attr_sim_amf;
+static fr_dict_attr_t const *attr_eap_aka_sim_any_id_req;
+static fr_dict_attr_t const *attr_eap_aka_sim_autn;
+static fr_dict_attr_t const *attr_eap_aka_sim_auts;
+static fr_dict_attr_t const *attr_eap_aka_sim_bidding;
+static fr_dict_attr_t const *attr_eap_aka_sim_checkcode;
+static fr_dict_attr_t const *attr_eap_aka_sim_client_error_code;
+static fr_dict_attr_t const *attr_eap_aka_sim_counter_too_small;
+static fr_dict_attr_t const *attr_eap_aka_sim_counter;
+static fr_dict_attr_t const *attr_eap_aka_sim_encr_data;
+static fr_dict_attr_t const *attr_eap_aka_sim_fullauth_id_req;
+static fr_dict_attr_t const *attr_eap_aka_sim_identity_type;
+static fr_dict_attr_t const *attr_eap_aka_sim_identity;
+static fr_dict_attr_t const *attr_eap_aka_sim_kdf_input;
+static fr_dict_attr_t const *attr_eap_aka_sim_kdf;
+static fr_dict_attr_t const *attr_eap_aka_sim_mac;
+static fr_dict_attr_t const *attr_eap_aka_sim_method_hint;
+static fr_dict_attr_t const *attr_eap_aka_sim_mk;
+static fr_dict_attr_t const *attr_eap_aka_sim_next_pseudonym;
+static fr_dict_attr_t const *attr_eap_aka_sim_next_reauth_id;
+static fr_dict_attr_t const *attr_eap_aka_sim_nonce_s;
+static fr_dict_attr_t const *attr_eap_aka_sim_notification;
+static fr_dict_attr_t const *attr_eap_aka_sim_permanent_id_req;
+static fr_dict_attr_t const *attr_eap_aka_sim_permanent_id;
+static fr_dict_attr_t const *attr_eap_aka_sim_rand;
+static fr_dict_attr_t const *attr_eap_aka_sim_res;
+static fr_dict_attr_t const *attr_eap_aka_sim_result_ind;
+static fr_dict_attr_t const *attr_eap_aka_sim_subtype;
 
 static fr_dict_attr_t const *attr_ms_mppe_send_key;
 static fr_dict_attr_t const *attr_ms_mppe_recv_key;
 
-static fr_dict_attr_t const *attr_eap_aka_any_id_req;
-static fr_dict_attr_t const *attr_eap_aka_autn;
-static fr_dict_attr_t const *attr_eap_aka_bidding;
-static fr_dict_attr_t const *attr_eap_aka_checkcode;
-static fr_dict_attr_t const *attr_eap_aka_client_error_code;
-static fr_dict_attr_t const *attr_eap_aka_encr_data;
-static fr_dict_attr_t const *attr_eap_aka_fullauth_id_req;
-static fr_dict_attr_t const *attr_eap_aka_identity;
-static fr_dict_attr_t const *attr_eap_aka_kdf;
-static fr_dict_attr_t const *attr_eap_aka_kdf_input;
-static fr_dict_attr_t const *attr_eap_aka_mac;
-static fr_dict_attr_t const *attr_eap_aka_notification;
-static fr_dict_attr_t const *attr_eap_aka_permanent_id_req;
-static fr_dict_attr_t const *attr_eap_aka_rand;
-static fr_dict_attr_t const *attr_eap_aka_res;
-static fr_dict_attr_t const *attr_eap_aka_result_ind;
+static fr_dict_attr_t const *attr_eap_identity;
+static fr_dict_attr_t const *attr_eap_type;
+static fr_dict_attr_t const *attr_session_data;
+static fr_dict_attr_t const *attr_session_id;
+static fr_dict_attr_t const *attr_sim_amf;
+static fr_dict_attr_t const *attr_sim_ki;
+static fr_dict_attr_t const *attr_sim_opc;
+static fr_dict_attr_t const *attr_sim_sqn;
 
 extern fr_dict_attr_autoload_t rlm_eap_aka_dict_attr[];
 fr_dict_attr_autoload_t rlm_eap_aka_dict_attr[] = {
-
-	{ .out = &attr_sim_amf, .name = "SIM-AMF", .type = FR_TYPE_OCTETS, .dict = &dict_freeradius },
+	{ .out = &attr_eap_aka_sim_any_id_req, .name = "Any-ID-Req", .type = FR_TYPE_BOOL, .dict = &dict_eap_aka_sim },
+	{ .out = &attr_eap_aka_sim_autn, .name = "AUTN", .type = FR_TYPE_OCTETS, .dict = &dict_eap_aka_sim },
+	{ .out = &attr_eap_aka_sim_auts, .name = "AUTS", .type = FR_TYPE_OCTETS, .dict = &dict_eap_aka_sim },
+	{ .out = &attr_eap_aka_sim_bidding, .name = "Bidding", .type = FR_TYPE_UINT16, .dict = &dict_eap_aka_sim },
+	{ .out = &attr_eap_aka_sim_checkcode, .name = "Checkcode", .type = FR_TYPE_OCTETS, .dict = &dict_eap_aka_sim },
+	{ .out = &attr_eap_aka_sim_client_error_code, .name = "Client-Error-Code", .type = FR_TYPE_UINT16, .dict = &dict_eap_aka_sim },
+	{ .out = &attr_eap_aka_sim_counter_too_small, .name = "Counter-Too-Small", .type = FR_TYPE_BOOL, .dict = &dict_eap_aka_sim },
+	{ .out = &attr_eap_aka_sim_counter, .name = "Counter", .type = FR_TYPE_UINT16, .dict = &dict_eap_aka_sim },
+	{ .out = &attr_eap_aka_sim_encr_data, .name = "Encr-Data", .type = FR_TYPE_TLV, .dict = &dict_eap_aka_sim },
+	{ .out = &attr_eap_aka_sim_fullauth_id_req, .name = "Fullauth-ID-Req", .type = FR_TYPE_BOOL, .dict = &dict_eap_aka_sim },
+	{ .out = &attr_eap_aka_sim_identity_type, .name = "Identity-Type", .type = FR_TYPE_UINT32, .dict = &dict_eap_aka_sim },
+	{ .out = &attr_eap_aka_sim_identity, .name = "Identity", .type = FR_TYPE_STRING, .dict = &dict_eap_aka_sim },
+	{ .out = &attr_eap_aka_sim_kdf_input, .name = "KDF-Input", .type = FR_TYPE_STRING, .dict = &dict_eap_aka_sim },
+	{ .out = &attr_eap_aka_sim_kdf, .name = "KDF", .type = FR_TYPE_UINT16, .dict = &dict_eap_aka_sim },
+	{ .out = &attr_eap_aka_sim_mac, .name = "MAC", .type = FR_TYPE_OCTETS, .dict = &dict_eap_aka_sim },
+	{ .out = &attr_eap_aka_sim_method_hint, .name = "Method-Hint", .type = FR_TYPE_UINT32, .dict = &dict_eap_aka_sim },
+	{ .out = &attr_eap_aka_sim_mk, .name = "MK", .type = FR_TYPE_OCTETS, .dict = &dict_eap_aka_sim },
+	{ .out = &attr_eap_aka_sim_next_pseudonym, .name = "Next-Pseudonym", .type = FR_TYPE_STRING, .dict = &dict_eap_aka_sim },
+	{ .out = &attr_eap_aka_sim_next_reauth_id, .name = "Next-Reauth-ID", .type = FR_TYPE_STRING, .dict = &dict_eap_aka_sim },
+	{ .out = &attr_eap_aka_sim_nonce_s, .name = "Nonce-S", .type = FR_TYPE_OCTETS, .dict = &dict_eap_aka_sim },
+	{ .out = &attr_eap_aka_sim_notification, .name = "Notification", .type = FR_TYPE_UINT16, .dict = &dict_eap_aka_sim },
+	{ .out = &attr_eap_aka_sim_permanent_id_req, .name = "Permanent-Id-Req", .type = FR_TYPE_BOOL, .dict = &dict_eap_aka_sim },
+	{ .out = &attr_eap_aka_sim_permanent_id, .name = "Permanent-ID", .type = FR_TYPE_STRING, .dict = &dict_eap_aka_sim },
+	{ .out = &attr_eap_aka_sim_rand, .name = "RAND", .type = FR_TYPE_OCTETS, .dict = &dict_eap_aka_sim },
+	{ .out = &attr_eap_aka_sim_res, .name = "RES", .type = FR_TYPE_OCTETS, .dict = &dict_eap_aka_sim },
+	{ .out = &attr_eap_aka_sim_result_ind, .name = "Result-Ind", .type = FR_TYPE_BOOL, .dict = &dict_eap_aka_sim },
+	{ .out = &attr_eap_aka_sim_subtype, .name = "Subtype", .type = FR_TYPE_UINT32, .dict = &dict_eap_aka_sim },
 
 	{ .out = &attr_ms_mppe_send_key, .name = "MS-MPPE-Send-Key", .type = FR_TYPE_OCTETS, .dict = &dict_radius },
 	{ .out = &attr_ms_mppe_recv_key, .name = "MS-MPPE-Recv-Key", .type = FR_TYPE_OCTETS, .dict = &dict_radius },
 
-	{ .out = &attr_eap_aka_any_id_req, .name = "EAP-AKA-Any-ID-Req", .type = FR_TYPE_BOOL, .dict = &dict_eap_aka },
-	{ .out = &attr_eap_aka_autn, .name = "EAP-AKA-AUTN", .type = FR_TYPE_OCTETS, .dict = &dict_eap_aka },
-	{ .out = &attr_eap_aka_bidding, .name = "EAP-AKA-Bidding", .type = FR_TYPE_UINT16, .dict = &dict_eap_aka },
-	{ .out = &attr_eap_aka_checkcode, .name = "EAP-AKA-Checkcode", .type = FR_TYPE_OCTETS, .dict = &dict_eap_aka },
-	{ .out = &attr_eap_aka_client_error_code, .name = "EAP-AKA-Client-Error-Code", .type = FR_TYPE_UINT16, .dict = &dict_eap_aka },
-	{ .out = &attr_eap_aka_encr_data, .name = "EAP-AKA-Encr-Data", .type = FR_TYPE_TLV, .dict = &dict_eap_aka },
-	{ .out = &attr_eap_aka_fullauth_id_req, .name = "EAP-AKA-Fullauth-ID-Req", .type = FR_TYPE_BOOL, .dict = &dict_eap_aka },
-	{ .out = &attr_eap_aka_identity, .name = "EAP-AKA-Identity", .type = FR_TYPE_STRING, .dict = &dict_eap_aka },
-	{ .out = &attr_eap_aka_kdf_input, .name = "EAP-AKA-KDF-Input", .type = FR_TYPE_STRING, .dict = &dict_eap_aka },
-	{ .out = &attr_eap_aka_kdf, .name = "EAP-AKA-KDF", .type = FR_TYPE_UINT16, .dict = &dict_eap_aka },
-	{ .out = &attr_eap_aka_mac, .name = "EAP-AKA-MAC", .type = FR_TYPE_OCTETS, .dict = &dict_eap_aka },
-	{ .out = &attr_eap_aka_notification, .name = "EAP-AKA-Notification", .type = FR_TYPE_UINT16, .dict = &dict_eap_aka },
-	{ .out = &attr_eap_aka_permanent_id_req, .name = "EAP-AKA-Permanent-ID-Req", .type = FR_TYPE_BOOL, .dict = &dict_eap_aka },
-	{ .out = &attr_eap_aka_rand, .name = "EAP-AKA-RAND", .type = FR_TYPE_OCTETS, .dict = &dict_eap_aka },
-	{ .out = &attr_eap_aka_res, .name = "EAP-AKA-RES", .type = FR_TYPE_OCTETS, .dict = &dict_eap_aka },
-	{ .out = &attr_eap_aka_result_ind, .name = "EAP-AKA-Result-Ind", .type = FR_TYPE_BOOL, .dict = &dict_eap_aka },
-	{ .out = &attr_eap_aka_subtype, .name = "EAP-AKA-Subtype", .type = FR_TYPE_UINT32, .dict = &dict_eap_aka },
+	/*
+	 *	Separate from the EAP-AKA-AND-SIM dictionary
+	 *	as they're outside the notional numberspace.
+	 */
+	{ .out = &attr_eap_identity, .name = "EAP-Identity", .type = FR_TYPE_STRING, .dict = &dict_freeradius },
+	{ .out = &attr_eap_type, .name = "EAP-Type", .type = FR_TYPE_UINT32, .dict = &dict_freeradius },
+	{ .out = &attr_session_data, .name = "Session-Data", .type = FR_TYPE_OCTETS, .dict = &dict_freeradius },
+	{ .out = &attr_session_id, .name = "Session-Id", .type = FR_TYPE_OCTETS, .dict = &dict_freeradius },
+	{ .out = &attr_sim_amf, .name = "SIM-AMF", .type = FR_TYPE_OCTETS, .dict = &dict_freeradius },
+	{ .out = &attr_sim_ki, .name = "SIM-Ki", .type = FR_TYPE_OCTETS, .dict = &dict_freeradius },
+	{ .out = &attr_sim_opc, .name = "SIM-OPc", .type = FR_TYPE_OCTETS, .dict = &dict_freeradius },
+	{ .out = &attr_sim_sqn, .name = "SIM-SQN", .type = FR_TYPE_UINT64, .dict = &dict_freeradius },
+
 	{ NULL }
 };
 
@@ -131,24 +201,579 @@ static int virtual_server_parse(UNUSED TALLOC_CTX *ctx, void *out, UNUSED void *
 {
 	CONF_SECTION	*server_cs;
 
-	if (virtual_server_has_namespace(&server_cs, cf_pair_value(cf_item_to_pair(ci)),
-					 dict_eap_aka, ci) < 0) return -1;
+	server_cs = virtual_server_find(cf_pair_value(cf_item_to_pair(ci)));
+	if (!server_cs) {
+		cf_log_err(ci, "virtual-server \"%s\" not found", cf_pair_value(cf_item_to_pair(ci)));
+		return -1;
+	}
 
-	if (mod_section_compile(out, server_cs) < 0) return -1;
+	*((CONF_SECTION **)out) = server_cs;
 
 	return 0;
 }
 
-static int eap_aka_compose(eap_session_t *eap_session)
+/** Cancel a call to a submodule
+ *
+ * @param[in] instance	UNUSED.
+ * @param[in] thread	UNUSED.
+ * @param[in] request	The current request.
+ * @param[in] rctx	the eap_session_t
+ * @param[in] action	to perform.
+ */
+static void mod_signal(UNUSED void *instance, UNUSED void *thread, REQUEST *request, UNUSED void *rctx,
+		       fr_state_signal_t action)
+{
+	eap_session_t	*eap_session = eap_session_get(request->parent);
+
+	if (action != FR_SIGNAL_CANCEL) return;
+
+	RDEBUG2("Request cancelled - Destroying EAP-AKA session");
+
+	TALLOC_FREE(eap_session->opaque);
+}
+
+/** Warn the user that the rcode they provided is being ignored in this section
+ *
+ */
+static inline void section_rcode_ignored(REQUEST *request)
+{
+	switch (request->rcode) {
+	case RLM_MODULE_USER_SECTION_REJECT:
+		RWDEBUG("Ignoring rcode (%s)",
+			fr_int2str(mod_rcode_table, request->rcode, "<invalid>"));
+		break;
+
+	default:
+		break;
+	}
+}
+
+/** Trigger a state transition to FAILURE-NOTIFICATION if the section returned a failure code
+ *
+ */
+#define section_rcode_process(_inst, _request, _eap_session) \
+{ \
+	switch ((_request)->rcode) { \
+	case RLM_MODULE_USER_SECTION_REJECT: \
+		REDEBUG("Section rcode (%s) indicates we should reject the user", \
+		        fr_int2str(rcode_table, request->rcode, "<INVALID>")); \
+		return aka_failure_notification_enter(_inst, _request, _eap_session); \
+	default: \
+		break; \
+	} \
+}
+
+/** Sync up what we're requesting with attributes in the reply
+ *
+ */
+static bool id_req_set_by_user(REQUEST *request, eap_aka_session_t *eap_aka_session)
+{
+	VALUE_PAIR 	*vp;
+	fr_cursor_t	cursor;
+	bool		set_by_user = false;
+
+	/*
+	 *	Check if the user included any of the
+	 *      ID req attributes.  If they did, use
+	 *	them to inform what we do next, and
+	 *	then delete them so they don't screw
+	 *	up any of the other code.
+	 */
+	for (vp = fr_cursor_init(&cursor, &request->reply->vps);
+	     vp;
+	     vp = fr_cursor_next(&cursor)) {
+		if (vp->da == attr_eap_aka_sim_permanent_id_req) {
+			eap_aka_session->id_req = AKA_SIM_PERMANENT_ID_REQ;
+		found:
+			set_by_user = true;
+			RDEBUG2("Previous section added &reply:%pP, will request additional identity (%s)",
+				vp, fr_int2str(fr_aka_sim_id_request_table, eap_aka_session->id_req, "<INVALID>"));
+			fr_cursor_free_item(&cursor);
+		}
+		else if (vp->da == attr_eap_aka_sim_fullauth_id_req) {
+			eap_aka_session->id_req = AKA_SIM_FULLAUTH_ID_REQ;
+			goto found;
+		}
+		else if (vp->da == attr_eap_aka_sim_any_id_req) {
+
+			eap_aka_session->id_req = AKA_SIM_ANY_ID_REQ;
+			goto found;
+		}
+	}
+
+	return set_by_user;
+}
+
+static void id_hint_pairs_add(REQUEST *request, char const *identity)
+{
+	fr_aka_sim_id_type_t	type;
+	fr_aka_sim_method_hint_t	method;
+
+	/*
+	 *	Process the identity that we received.
+	 */
+	if (fr_aka_sim_id_type(&type, &method,
+			   identity, talloc_array_length(identity) - 1) < 0) {
+		RPWDEBUG2("Failed parsing identity, continuing anyway");
+	}
+
+	/*
+	 *	Map the output from the generic ID parser
+	 *	function to specific EAP-AKA internal
+	 *	attributes in the subrequest.
+	 */
+	if (type != AKA_SIM_ID_TYPE_UNKNOWN) {
+		VALUE_PAIR *vp = NULL;
+
+		MEM(pair_update_request(&vp, attr_eap_aka_sim_identity_type) >= 0);
+		switch (type) {
+		case AKA_SIM_ID_TYPE_PERMANENT:
+			vp->vp_uint32 = FR_IDENTITY_TYPE_VALUE_PERMANENT;
+			break;
+
+		case AKA_SIM_ID_TYPE_PSEUDONYM:
+			vp->vp_uint32 = FR_IDENTITY_TYPE_VALUE_PSEUDONYM;
+			break;
+
+		case AKA_SIM_ID_TYPE_FASTAUTH:
+			vp->vp_uint32 = FR_IDENTITY_TYPE_VALUE_FASTAUTH;
+			break;
+
+		default:
+			rad_assert(0);
+		}
+	}
+
+	/*
+	 *	Map the output from the generic ID parser
+	 *	function to specific EAP-AKA internal
+	 *	attributes in the subrequest.
+	 */
+	if (method != AKA_SIM_METHOD_HINT_UNKNOWN) {
+		VALUE_PAIR *vp = NULL;
+
+		MEM(pair_update_request(&vp, attr_eap_aka_sim_method_hint) >= 0);
+		switch (method) {
+		case AKA_SIM_METHOD_HINT_AKA_PRIME:
+			vp->vp_uint32 = FR_METHOD_HINT_VALUE_AKA_PRIME;
+			break;
+
+		case AKA_SIM_METHOD_HINT_AKA:
+			vp->vp_uint32 = FR_METHOD_HINT_VALUE_AKA;
+			break;
+
+		case AKA_SIM_METHOD_HINT_SIM:
+			vp->vp_uint32 = FR_METHOD_HINT_VALUE_SIM;
+			break;
+
+		default:
+			rad_assert(0);
+		}
+	}
+}
+
+/** Copy the incoming identity to the permanent identity attribute
+ *
+ * If the incoming ID really looks like a permanent ID, and we were
+ * told it was a permanent ID, then trim the first byte to form the
+ * real permanent ID.
+ *
+ * Adds &session-state:Permanent-Id.
+ *
+ * @param[in] request	The current request.
+ * @param[in] in	current identity.
+ * @param[in] eap_type	The current eap_type.
+ */
+static int id_to_permanent_id(REQUEST *request, VALUE_PAIR *in, eap_type_t eap_type)
+{
+	fr_aka_sim_id_type_t		our_type;
+	fr_aka_sim_method_hint_t	our_method, expected_method;
+
+	if (in->vp_length == 0) {
+		REDEBUG2("Not processing zero length identity");
+		return -1;
+	}
+
+	if (fr_pair_find_by_da(request->state, attr_eap_aka_sim_permanent_id, TAG_ANY)) {
+		REDEBUG2("Not overriding &session-state:%s set by policy",
+			 attr_eap_aka_sim_permanent_id->name);
+		return -1;
+	}
+
+	switch (eap_type) {
+	case FR_EAP_METHOD_SIM:
+		expected_method = AKA_SIM_METHOD_HINT_SIM;
+		break;
+
+	case FR_EAP_METHOD_AKA:
+		expected_method = AKA_SIM_METHOD_HINT_AKA;
+		break;
+
+	case FR_EAP_METHOD_AKA_PRIME:
+		expected_method = AKA_SIM_METHOD_HINT_AKA_PRIME;
+		break;
+
+	default:
+		return -1;
+	}
+
+	/*
+	 *	First, lets see if this looks like an identity
+	 *	we can process.
+	 *
+	 *	For now we allow all permanent identities no
+	 *	matter what EAP method.
+	 *
+	 *	This is because we could be starting a different
+	 *	EAP method to the one the identity hinted,
+	 *	but we still want to strip the first byte.
+	 */
+	if ((fr_aka_sim_id_type(&our_type, &our_method, in->vp_strvalue, in->vp_length) < 0) ||
+	    (our_type != AKA_SIM_ID_TYPE_PERMANENT)) {
+		VALUE_PAIR *vp;
+
+		RDEBUG2("&%s has incorrect hint byte, expected '%c', got '%c', "
+			"copying identity to &session-state:%s verbatim without stripping",
+			in->da->name,
+			fr_aka_sim_hint_byte(AKA_SIM_ID_TYPE_PERMANENT, expected_method),
+			fr_aka_sim_hint_byte(our_type, our_method),
+			attr_eap_aka_sim_permanent_id->name);
+
+		MEM(fr_pair_add_by_da(request->state_ctx, &vp, &request->state, attr_eap_aka_sim_permanent_id) >= 0);
+		fr_pair_value_copy(vp, in);
+	} else {
+		VALUE_PAIR *vp;
+
+		/*
+		 *	To get here the identity must be >= 1 and must have
+		 *      had the expected hint byte.
+		 *
+		 *	Strip off the hint byte, and then add the permanent
+		 *	identity to the output list.
+		 */
+		MEM(fr_pair_add_by_da(request->state_ctx, &vp, &request->state, attr_eap_aka_sim_permanent_id) >= 0);
+		fr_pair_value_bstrncpy(vp, in->vp_strvalue + 1, in->vp_length - 1);
+
+		RDEBUG2("Stripping identity hint and copying &%s to &session-state:%pP", in->da->name, vp);
+	}
+
+	return 0;
+}
+
+/** Called after 'store session { ... }'
+ *
+ */
+static rlm_rcode_t session_store_resume(void *instance, UNUSED void *thread, REQUEST *request, void *rctx)
+{
+	aka_state_enter_t	state_enter = (aka_state_enter_t)rctx;
+
+	switch (request->rcode) {
+	/*
+	 *	Store failed.  Don't send fastauth id
+	 */
+	case RLM_MODULE_USER_SECTION_REJECT:
+		pair_delete_reply(attr_eap_aka_sim_next_reauth_id);
+		break;
+
+	default:
+		break;
+	}
+
+	pair_delete_request(attr_eap_aka_sim_next_reauth_id);
+
+	return state_enter(instance, request, eap_session_get(request->parent));
+}
+
+/** Called after 'store pseudonym { ... }'
+ *
+ */
+static rlm_rcode_t pseudonym_store_resume(void *instance, UNUSED void *thread, REQUEST *request, void *rctx)
+{
+	rlm_eap_aka_t		*inst = talloc_get_type_abort(instance, rlm_eap_aka_t);
+	eap_session_t		*eap_session = eap_session_get(request->parent);
+	eap_aka_session_t	*eap_aka_session = talloc_get_type_abort(eap_session->opaque, eap_aka_session_t);
+	aka_state_enter_t	state_enter = (aka_state_enter_t)rctx;
+	VALUE_PAIR		*vp;
+	VALUE_PAIR		*new;
+
+	switch (request->rcode) {
+	/*
+	 *	Store failed.  Don't send pseudonym
+	 */
+	case RLM_MODULE_USER_SECTION_REJECT:
+		pair_delete_reply(attr_eap_aka_sim_next_pseudonym);
+		break;
+
+	default:
+		break;
+	}
+
+	request->rcode = RLM_MODULE_NOOP;	/* Needed because we may call resume functions directly */
+
+	pair_delete_request(attr_eap_aka_sim_next_pseudonym);
+
+	vp = fr_pair_find_by_da(request->reply->vps, attr_eap_aka_sim_next_reauth_id, TAG_ANY);
+	if (vp) {
+		/*
+		 *	Generate a random fastauth string
+		 */
+		if (vp->vp_length == 0) {
+			char *identity;
+
+			if (!inst->ephemeral_id_length) {
+				RWDEBUG("Found empty Next-Reauth-Id, and told not to generate one.  "
+					"Skipping store session { ... } section");
+
+				goto done;
+			}
+
+			MEM(identity = talloc_array(vp, char, inst->ephemeral_id_length + 2));
+			switch (eap_aka_session->type) {
+			case FR_EAP_METHOD_AKA_PRIME:
+				identity[0] = (char)ID_TAG_AKA_PRIME_FASTAUTH;
+				break;
+
+			case FR_EAP_METHOD_AKA:
+			 	identity[0] = (char)ID_TAG_AKA_FASTAUTH;
+				break;
+
+			default:
+				break;
+			}
+			fr_rand_str((uint8_t *)identity + 1, inst->ephemeral_id_length, 'a');
+			identity[talloc_array_length(identity) - 1] = '\0';
+
+			fr_value_box_strdup_buffer_shallow(NULL, &vp->data, NULL, identity, false);
+		}
+		pair_update_request(&new, attr_session_id);
+		fr_pair_value_copy(new, vp);
+
+		MEM(eap_aka_session->fastauth_sent = talloc_bstrndup(eap_aka_session,
+								     vp->vp_strvalue, vp->vp_length));
+
+		switch (eap_aka_session->kdf) {
+		/*
+		 *	AKA uses the original MK for session resumption.
+		 */
+		case FR_KDF_VALUE_EAP_AKA:
+			MEM(pair_update_session_state(&vp, attr_session_data) >= 0);
+			fr_pair_value_memcpy(vp, eap_aka_session->keys.mk,
+					     sizeof(eap_aka_session->keys.mk), false);
+			break;
+		/*
+		 *	AKA' KDF 1 generates an additional key k_re
+		 *	which is used for reauthentication instead
+		 *	of the MK.
+		 */
+		case FR_KDF_VALUE_PRIME_WITH_CK_PRIME_IK_PRIME:
+			MEM(pair_update_session_state(&vp, attr_session_data) >= 0);
+			fr_pair_value_memcpy(vp, eap_aka_session->keys.k_re,
+					     sizeof(eap_aka_session->keys.k_re), false);
+			break;
+		}
+
+		/*
+		 *	If the counter already exists in session
+		 *	state increment by 1, otherwise, add the
+		 *	attribute and set to zero.
+		 */
+		vp = fr_pair_find_by_da(request->state, attr_eap_aka_sim_counter, TAG_ANY);
+		if (vp) {
+			vp->vp_uint16++;
+		/*
+		 *	Will get incremented by 1 in
+		 *	reauthentication_send, so when
+		 *	used, it'll be 1 (as per the standard).
+		 */
+		} else {
+			MEM(pair_add_session_state(&vp, attr_eap_aka_sim_counter) >= 0);
+			vp->vp_uint16 = 0;
+		}
+
+		return unlang_module_yield_to_section(request,
+						      inst->actions.store_session,
+						      RLM_MODULE_NOOP,
+						      session_store_resume,
+						      mod_signal,
+						      rctx);
+	}
+
+done:
+	return state_enter(inst, request, eap_session_get(request->parent));
+}
+
+/** Implements a set of states for storing pseudonym and fastauth identities
+ *
+ * At the end of challenge or reauthentication rounds, the user may have specified
+ * a pseudonym and fastauth identity to return to the supplicant.
+ *
+ * Call the appropriate sections to persist those values.
+ *
+ * @param[in] inst		of rlm_eap_aka.
+ * @param[in] request		the current request.
+ * @param[in] state_enter	state entry function for the
+ *				state to transition to *after* the current
+ *				state.
+ * @return RLM_MODULE_HANDLED.
+ */
+static rlm_rcode_t session_and_pseudonym_store(rlm_eap_aka_t *inst, REQUEST *request, eap_session_t *eap_session,
+					       aka_state_enter_t state_enter)
+{
+	eap_aka_session_t	*eap_aka_session = talloc_get_type_abort(eap_session->opaque, eap_aka_session_t);
+	VALUE_PAIR		*vp;
+	VALUE_PAIR		*new;
+
+	request->rcode = RLM_MODULE_NOOP;	/* Needed because we may call resume functions directly */
+
+	vp = fr_pair_find_by_da(request->reply->vps, attr_eap_aka_sim_next_pseudonym, TAG_ANY);
+	if (vp) {
+		/*
+		 *	Generate a random pseudonym string
+		 */
+		if (vp->vp_length == 0) {
+			char *identity;
+
+			if (!inst->ephemeral_id_length) {
+				RWDEBUG("Found empty Pseudonym-Id, and told not to generate one.  "
+					"Skipping store pseudonym { ... } section");
+
+				return pseudonym_store_resume(inst,
+							      module_thread_by_data(inst),
+							      request, (void *)state_enter);
+			}
+
+			MEM(identity = talloc_array(vp, char, inst->ephemeral_id_length + 2));
+			fr_rand_str((uint8_t *)identity + 1, inst->ephemeral_id_length, 'a');
+			switch (eap_aka_session->type) {
+			case FR_EAP_METHOD_AKA_PRIME:
+				identity[0] = (char)ID_TAG_AKA_PRIME_PSEUDONYM;
+				break;
+
+			case FR_EAP_METHOD_AKA:
+			 	identity[0] = (char)ID_TAG_AKA_PSEUDONYM;
+				break;
+
+			default:
+				break;
+			}
+			identity[talloc_array_length(identity) - 1] = '\0';
+			fr_value_box_strdup_buffer_shallow(NULL, &vp->data, NULL, identity, false);
+		}
+		pair_update_request(&new, attr_eap_aka_sim_next_pseudonym);
+		fr_pair_value_copy(new, vp);
+
+		MEM(eap_aka_session->pseudonym_sent = talloc_bstrndup(eap_aka_session,
+								      vp->vp_strvalue, vp->vp_length));
+
+		return unlang_module_yield_to_section(request,
+						      inst->actions.store_pseudonym,
+						      RLM_MODULE_NOOP,
+						      pseudonym_store_resume,
+						      mod_signal,
+						      state_enter);
+	}
+
+	return pseudonym_store_resume(inst, module_thread_by_data(inst), request, (void *)state_enter);
+}
+
+/** Called after 'clear session { ... }'
+ *
+ */
+static rlm_rcode_t session_clear_resume(void *instance, UNUSED void *thread, REQUEST *request, void *rctx)
+{
+	aka_state_enter_t	state_enter = (aka_state_enter_t)rctx;
+
+	pair_delete_request(attr_session_id);
+
+	return state_enter(instance, request, eap_session_get(request->parent));
+}
+
+/** Called after 'clear pseudonym { ... }'
+ *
+ */
+static rlm_rcode_t pseudonym_clear_resume(void *instance, UNUSED void *thread, REQUEST *request, void *rctx)
+{
+	rlm_eap_aka_t		*inst = talloc_get_type_abort(instance, rlm_eap_aka_t);
+	eap_session_t		*eap_session = eap_session_get(request->parent);
+	eap_aka_session_t	*eap_aka_session = talloc_get_type_abort(eap_session->opaque, eap_aka_session_t);
+	aka_state_enter_t	state_enter = (aka_state_enter_t)rctx;
+
+	pair_delete_request(attr_eap_aka_sim_next_pseudonym);
+
+	/*
+	 *	Clear session
+	 */
+	if (eap_aka_session->fastauth_sent) {
+		VALUE_PAIR *vp;
+
+		pair_delete_request(attr_session_id);
+
+		MEM(pair_update_request(&vp, attr_session_id) >= 0);
+		fr_value_box_strdup_buffer(vp, &vp->data, NULL, eap_aka_session->fastauth_sent, true);
+		TALLOC_FREE(eap_aka_session->fastauth_sent);
+
+		return unlang_module_yield_to_section(request,
+						      inst->actions.clear_session,
+						      RLM_MODULE_NOOP,
+						      session_clear_resume,
+						      mod_signal,
+						      rctx);
+	}
+
+	return state_enter(inst, request, eap_session_get(request->parent));
+}
+
+/** Implements a set of states for clearing out pseudonym and fastauth identities
+ *
+ * If either a Challenge round or Reauthentication round fail, we need to clear
+ * any identities that were provided during those rounds, as the supplicant
+ * will have discarded them.
+ *
+ * @param[in] inst		of rlm_eap_aka.
+ * @param[in] request		the current request.
+ * @param[in] state_enter	state entry function for the
+ *				state to transition to *after* the current
+ *				state.
+ * @return RLM_MODULE_HANDLED.
+ */
+static rlm_rcode_t session_and_pseudonym_clear(rlm_eap_aka_t *inst, REQUEST *request, eap_session_t *eap_session,
+					       aka_state_enter_t state_enter)
+{
+	eap_aka_session_t	*eap_aka_session = talloc_get_type_abort(eap_session->opaque, eap_aka_session_t);
+
+	/*
+	 *	Clear out pseudonyms
+	 */
+	if (eap_aka_session->pseudonym_sent) {
+		VALUE_PAIR *vp;
+
+		MEM(pair_update_request(&vp, attr_eap_aka_sim_next_pseudonym) >= 0);
+		fr_value_box_strdup_buffer(vp, &vp->data, NULL, eap_aka_session->pseudonym_sent, true);
+		TALLOC_FREE(eap_aka_session->pseudonym_sent);
+
+		return unlang_module_yield_to_section(request,
+						      inst->actions.clear_pseudonym,
+						      RLM_MODULE_NOOP,
+						      session_clear_resume,
+						      mod_signal,
+						      (void *)state_enter);
+	}
+
+	return pseudonym_clear_resume(inst, module_thread_by_data(inst), request, (void *)state_enter);
+}
+
+/** Encode EAP-AKA attributes
+ *
+ */
+static int aka_encode(REQUEST *request, eap_session_t *eap_session)
 {
 	eap_aka_session_t	*eap_aka_session = talloc_get_type_abort(eap_session->opaque, eap_aka_session_t);
 	fr_cursor_t		cursor;
 	fr_cursor_t		to_encode;
 	VALUE_PAIR		*head = NULL, *vp;
-	REQUEST			*request = eap_session->request;
 	ssize_t			ret;
-	fr_sim_encode_ctx_t	encoder_ctx = {
-					.root = fr_dict_root(dict_eap_aka),
+	fr_aka_sim_encode_ctx_t	encoder_ctx = {
+					.root = fr_dict_root(dict_eap_aka_sim),
 					.keys = &eap_aka_session->keys,
 
 					.iv = { 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
@@ -161,7 +786,7 @@ static int eap_aka_compose(eap_session_t *eap_session)
 					.hmac_extra_len = 0
 				};
 
-	fr_cursor_init(&cursor, &eap_session->request->reply->vps);
+	fr_cursor_init(&cursor, &request->reply->vps);
 	fr_cursor_init(&to_encode, &head);
 
 	while ((vp = fr_cursor_current(&cursor))) {
@@ -177,7 +802,7 @@ static int eap_aka_compose(eap_session_t *eap_session)
 		 *	added by policy, and seem to cause
 		 *	wpa_supplicant to fail if sent before the challenge.
 		 */
-		if (!eap_aka_session->allow_encrypted && fr_dict_parent_common(attr_eap_aka_encr_data, vp->da, true)) {
+		if (!eap_aka_session->allow_encrypted && fr_dict_parent_common(attr_eap_aka_sim_encr_data, vp->da, true)) {
 			RWDEBUG("Silently discarding &reply:%s: Encrypted attributes not allowed in this round",
 				vp->da->name);
 			talloc_free(vp);
@@ -194,7 +819,7 @@ static int eap_aka_compose(eap_session_t *eap_session)
 	eap_session->this_round->request->id = eap_aka_session->aka_id++ & 0xff;
 	eap_session->this_round->set_request_id = true;
 
-	ret = fr_sim_encode(eap_session->request, head, &encoder_ctx);
+	ret = fr_aka_sim_encode(request, head, &encoder_ctx);
 	fr_cursor_head(&to_encode);
 	fr_cursor_free_list(&to_encode);
 
@@ -203,6 +828,519 @@ static int eap_aka_compose(eap_session_t *eap_session)
 		return -1;
 	}
 	return 0;
+}
+
+static rlm_rcode_t aka_eap_failure_send(REQUEST *request, eap_session_t *eap_session)
+{
+	RDEBUG2("Sending EAP-Failure");
+
+	eap_session->this_round->request->code = FR_EAP_CODE_FAILURE;
+	eap_session->finished = true;
+
+	return RLM_MODULE_REJECT;
+}
+
+/** Send a failure message
+ *
+ */
+static rlm_rcode_t aka_failure_notification_send(rlm_eap_aka_t *inst, REQUEST *request, eap_session_t *eap_session)
+{
+	VALUE_PAIR		*vp;
+	eap_aka_session_t	*eap_aka_session = talloc_get_type_abort(eap_session->opaque, eap_aka_session_t);
+
+	vp = fr_pair_find_by_da(request->reply->vps, attr_eap_aka_sim_notification, TAG_ANY);
+	if (!vp) {
+		pair_add_reply(&vp, attr_eap_aka_sim_notification);
+		vp->vp_uint16 = FR_NOTIFICATION_VALUE_GENERAL_FAILURE;
+	}
+
+	/*
+	 *	Change the failure notification depending where
+	 *	we are in the eap_aka_state machine.
+	 */
+	if (eap_aka_session->challenge_success || eap_aka_session->reauthentication_success) {
+		vp->vp_uint16 &= ~0x4000;	/* Unset phase bit */
+
+		/*
+		 *	Include the counter attribute if we're failing
+		 *	after a reauthentication success.
+		 *
+		 *	RFC 4187 section 9.10
+		 *
+		 *	If EAP-Request/AKA-Notification is used on
+		 *	a fast re-authentication exchange, and if
+		 *	the P bit in AT_NOTIFICATION is set to zero,
+		 *	then AT_COUNTER is used for replay protection.
+		 *	In this case, the AT_ENCR_DATA and AT_IV
+		 *	attributes MUST be included, and the
+		 *	encapsulated plaintext attributes MUST include
+		 *	the AT_COUNTER attribute.  The counter value
+		 *	included in AT_COUNTER MUST be the same
+   		 *	as in the EAP-Request/AKA-Reauthentication
+   		 *	packet on the same fast re-authentication
+   		 *	exchange.
+		 *
+		 *	If the counter is used it should never be zero,
+		 *	as it's incremented on first reauthentication
+		 *	request.
+		 */
+		if (eap_aka_session->reauthentication_success) {
+			MEM(pair_update_reply(&vp, attr_eap_aka_sim_counter) >= 0);
+			vp->vp_uint16 = eap_aka_session->keys.reauth.counter;
+		}
+
+		/*
+		 *	If we're after the challenge phase
+		 *	then we need to include a MAC to
+		 *	protect notifications.
+		 */
+		MEM(pair_update_reply(&vp, attr_eap_aka_sim_mac) >= 0);
+		fr_pair_value_memcpy(vp, NULL, 0, false);
+	} else {
+		vp->vp_uint16 |= 0x4000;	/* Set phase bit */
+	}
+	vp->vp_uint16 &= ~0x8000;		/* In both cases success bit should be low */
+
+	eap_session->this_round->request->code = FR_EAP_CODE_REQUEST;
+
+	/*
+	 *	Set the subtype to notification
+	 */
+	MEM(pair_update_reply(&vp, attr_eap_aka_sim_subtype) >= 0);
+	vp->vp_uint16 = FR_SUBTYPE_VALUE_NOTIFICATION;
+
+	/*
+	 *	Encode the packet
+	 */
+	if (aka_encode(request, eap_session) < 0) return aka_failure_notification_enter(inst, request, eap_session);
+
+	return RLM_MODULE_HANDLED;
+}
+
+/** Send a success message with MPPE-keys
+ *
+ * The only work to be done is the add the appropriate SEND/RECV
+ * attributes derived from the MSK.
+ */
+static rlm_rcode_t aka_eap_success_send(REQUEST *request, eap_session_t *eap_session)
+{
+	uint8_t			*p;
+	eap_aka_session_t	*eap_aka_session;
+
+	RDEBUG2("Sending EAP-Success");
+
+	eap_session->this_round->request->code = FR_EAP_CODE_SUCCESS;
+	eap_session->finished = true;
+
+	eap_aka_session = talloc_get_type_abort(eap_session->opaque, eap_aka_session_t);
+
+	RDEBUG2("Adding attributes for MSK");
+	p = eap_aka_session->keys.msk;
+	eap_add_reply(request->parent, attr_ms_mppe_recv_key, p, EAP_TLS_MPPE_KEY_LEN);
+	p += EAP_TLS_MPPE_KEY_LEN;
+	eap_add_reply(request->parent, attr_ms_mppe_send_key, p, EAP_TLS_MPPE_KEY_LEN);
+
+	return RLM_MODULE_OK;
+}
+
+/** Send a success notification
+ *
+ */
+static rlm_rcode_t aka_success_notification_send(rlm_eap_aka_t *inst, REQUEST *request, eap_session_t *eap_session)
+{
+	eap_aka_session_t	*eap_aka_session = talloc_get_type_abort(eap_session->opaque, eap_aka_session_t);
+	VALUE_PAIR		*vp;
+
+	RDEBUG2("Sending EAP-Request/AKA-Notification (Success)");
+	eap_session->this_round->request->code = FR_EAP_CODE_REQUEST;
+
+	if (!fr_cond_assert(eap_aka_session->challenge_success ||
+			    eap_aka_session->reauthentication_success)) return RLM_MODULE_FAIL;
+
+	/*
+	 *	Set the subtype to notification
+	 */
+	MEM(pair_update_reply(&vp, attr_eap_aka_sim_subtype) >= 0);
+	vp->vp_uint16 = FR_SUBTYPE_VALUE_NOTIFICATION;
+
+	/*
+	 *	If we're in this state success bit is
+	 *	high phase bit is low.
+	 */
+	MEM(pair_update_reply(&vp, attr_eap_aka_sim_notification) >= 0);
+	vp->vp_uint16 = FR_NOTIFICATION_VALUE_SUCCESS;
+
+	/*
+	 *	RFC 4187 section 9.10
+	 *
+	 *	If EAP-Request/AKA-Notification is used on
+	 *	a fast re-authentication exchange, and if
+	 *	the P bit in AT_NOTIFICATION is set to zero,
+	 *	then AT_COUNTER is used for replay protection.
+	 *	In this case, the AT_ENCR_DATA and AT_IV
+	 *	attributes MUST be included, and the
+	 *	encapsulated plaintext attributes MUST include
+	 *	the AT_COUNTER attribute.  The counter value
+	 *	included in AT_COUNTER MUST be the same
+	 *	as in the EAP-Request/AKA-Reauthentication
+	 *	packet on the same fast re-authentication
+	 *	exchange.
+	 *
+	 *	If the counter is used it should never be zero,
+	 *	as it's incremented on first reauthentication
+	 *	request.
+	 */
+	if (eap_aka_session->keys.reauth.counter > 0) {
+		MEM(pair_update_reply(&vp, attr_eap_aka_sim_counter) >= 0);
+		vp->vp_uint16 = eap_aka_session->keys.reauth.counter;
+	}
+
+	/*
+	 *	Need to include an AT_MAC attribute so that
+	 *	it will get calculated.
+	 */
+	MEM(pair_update_reply(&vp, attr_eap_aka_sim_mac) >= 0);
+	fr_pair_value_memcpy(vp, NULL, 0, false);
+
+	/*
+	 *	Encode the packet
+	 */
+	if (aka_encode(request, eap_session) < 0) return aka_failure_notification_enter(inst, request, eap_session);
+
+	return RLM_MODULE_HANDLED;
+}
+
+/** Called after 'store session { ... }' and 'store pseudonym { ... }'
+ *
+ */
+static rlm_rcode_t aka_reauthentication_request_send(rlm_eap_aka_t *inst, REQUEST *request, eap_session_t *eap_session)
+{
+	/*
+	 *	Encode the packet - AT_IV is handled automatically
+	 *	by the encoder.
+	 */
+	if (aka_encode(request, eap_session) < 0) return aka_failure_notification_enter(inst, request, eap_session);
+
+	return RLM_MODULE_HANDLED;
+}
+
+/** Reauthentication request send
+ *
+ */
+static rlm_rcode_t aka_reauthentication_request_compose(rlm_eap_aka_t *inst, REQUEST *request,
+							eap_session_t *eap_session)
+{
+	eap_aka_session_t	*eap_aka_session = talloc_get_type_abort(eap_session->opaque, eap_aka_session_t);
+	VALUE_PAIR		*to_peer = request->reply->vps, *vp;
+
+	RDEBUG2("Generating new session keys");
+
+	/*
+	 *	Update the key structure with a new
+	 *	nonce_s value, counter, and MK.
+	 */
+	switch (eap_aka_session->kdf) {
+	case FR_KDF_VALUE_EAP_AKA:
+		if (fr_aka_sim_vector_umts_kdf_0_reauth_from_attrs(request, request->state,
+								   &eap_aka_session->keys) != 0) {
+		request_new_id:
+			switch (eap_aka_session->last_id_req) {
+			/*
+			 *	Got here processing EAP-Identity-Response
+			 *	If this is the *true* reauth ID, then
+			 *	there's no point in setting AKA_SIM_ANY_ID_REQ.
+			 */
+			case AKA_SIM_NO_ID_REQ:
+			case AKA_SIM_ANY_ID_REQ:
+				eap_aka_session->id_req = AKA_SIM_FULLAUTH_ID_REQ;
+				return aka_identity_enter(inst, request, eap_session);
+
+			case AKA_SIM_FULLAUTH_ID_REQ:
+			case AKA_SIM_PERMANENT_ID_REQ:
+				REDEBUG("Last requested fullauth or permanent ID, "
+					"but received, or were told we received (by policy), "
+					"a fastauth ID.  Cannot continue");
+			failure:
+				return aka_failure_notification_enter(inst, request, eap_session);
+			}
+		}
+		if (fr_aka_sim_crypto_kdf_0_reauth(&eap_aka_session->keys) < 0) goto request_new_id;
+		break;
+
+	case FR_KDF_VALUE_PRIME_WITH_CK_PRIME_IK_PRIME:
+		if (fr_aka_sim_vector_umts_kdf_1_reauth_from_attrs(request, request->state,
+								   &eap_aka_session->keys) != 0) goto request_new_id;
+		if (fr_aka_sim_crypto_kdf_1_reauth(&eap_aka_session->keys) < 0) goto request_new_id;
+		break;
+	}
+
+	if (RDEBUG_ENABLED3) fr_aka_sim_crypto_keys_log(request, &eap_aka_session->keys);
+
+	/*
+	 *	Add AT_IV, AT_COUNTER, AT_NONCE_S, and AT_MAC to to reply
+	 *      The user may have added AT_NEXT_REAUTH_ID, in which case
+	 *	we'll have sent that too.
+	 */
+	RDEBUG2("Sending AKA-Reauthentication");
+	eap_session->this_round->request->code = FR_EAP_CODE_REQUEST;
+
+	/*
+	 *	Set the subtype to reauthentication
+	 */
+	MEM(pair_update_reply(&vp, attr_eap_aka_sim_subtype) >= 0);
+	vp->vp_uint16 = FR_SUBTYPE_VALUE_REAUTHENTICATION;
+
+	/*
+	 *	Indicate we'd like to use protected success messages
+	 *	with AT_RESULT_IND
+	 *
+	 *	Use our default, but allow user override too.
+	 */
+	vp = fr_pair_find_by_da(to_peer, attr_eap_aka_sim_result_ind, TAG_ANY);
+	if (vp) eap_aka_session->send_result_ind = vp->vp_bool;
+
+	/*
+	 *	RFC 5448 says AT_BIDDING is only sent in the challenge
+	 *	not in reauthentication, so don't add that here.
+	 */
+
+	 /*
+	  *	Add AT_NONCE_S
+	  */
+	MEM(pair_update_reply(&vp, attr_eap_aka_sim_nonce_s) >= 0);
+	fr_pair_value_memcpy(vp, eap_aka_session->keys.reauth.nonce_s,
+			     sizeof(eap_aka_session->keys.reauth.nonce_s), false);
+
+	/*
+	 *	Add AT_COUNTER
+	 */
+	MEM(pair_update_reply(&vp, attr_eap_aka_sim_counter) >= 0);
+	vp->vp_uint16 = eap_aka_session->keys.reauth.counter;
+
+	/*
+	 *	need to include an empty AT_MAC attribute so that
+	 *	the mac will get calculated.
+	 */
+	MEM(pair_update_reply(&vp, attr_eap_aka_sim_mac) >= 0);
+	fr_pair_value_memcpy(vp, NULL, 0, false);
+
+	/*
+	 *	If we have checkcode data, send that to the peer
+	 *	in AT_CHECKCODE for validation.
+	 */
+	if (eap_aka_session->checkcode_state) {
+		ssize_t	slen;
+
+		slen = fr_aka_sim_crypto_finalise_checkcode(eap_aka_session->checkcode, &eap_aka_session->checkcode_state);
+		if (slen < 0) {
+			RPEDEBUG("Failed calculating checkcode");
+			goto failure;
+		}
+		eap_aka_session->checkcode_len = slen;
+
+		MEM(pair_update_reply(&vp, attr_eap_aka_sim_checkcode) >= 0);
+		fr_pair_value_memcpy(vp, eap_aka_session->checkcode, slen, false);
+	/*
+	 *	If we don't have checkcode data, then we exchanged
+	 *	no identity packets, so checkcode is zero.
+	 */
+	} else {
+		MEM(pair_update_reply(&vp, attr_eap_aka_sim_checkcode) >= 0);
+		fr_pair_value_memcpy(vp, NULL, 0, false);
+		eap_aka_session->checkcode_len = 0;
+	}
+
+	/*
+	 *	We've sent the challenge so the peer should now be able
+	 *	to accept encrypted attributes.
+	 */
+	eap_aka_session->allow_encrypted = true;
+
+	return session_and_pseudonym_store(inst, request, eap_session, aka_reauthentication_request_send);
+}
+
+/** Called after 'store session { ... }' and 'store pseudonym { ... }'
+ *
+ */
+static rlm_rcode_t aka_challenge_request_send(rlm_eap_aka_t *inst, REQUEST *request, eap_session_t *eap_session)
+{
+	/*
+	 *	Encode the packet - AT_IV is handled automatically
+	 *	by the encoder.
+	 */
+	if (aka_encode(request, eap_session) < 0) return aka_failure_notification_enter(inst, request, eap_session);
+
+	return RLM_MODULE_HANDLED;
+}
+
+/** Send the challenge itself
+ *
+ * Challenges will come from one of three places eventually:
+ *
+ * 1  from attributes like FR_RANDx
+ *	    (these might be retrieved from a database)
+ *
+ * 2  from internally implemented SIM authenticators
+ *	    (a simple one based upon XOR will be provided)
+ *
+ * 3  from some kind of SS7 interface.
+ *
+ * For now, they only come from attributes.
+ * It might be that the best way to do 2/3 will be with a different
+ * module to generate/calculate things.
+ */
+static rlm_rcode_t aka_challenge_request_compose(rlm_eap_aka_t *inst, REQUEST *request, eap_session_t *eap_session)
+{
+	eap_aka_session_t	*eap_aka_session = talloc_get_type_abort(eap_session->opaque, eap_aka_session_t);
+	VALUE_PAIR		*to_peer = request->reply->vps, *vp;
+	fr_aka_sim_vector_src_t	src = AKA_SIM_VECTOR_SRC_AUTO;
+
+	RDEBUG2("Acquiring UMTS vector(s)");
+
+	if (eap_aka_session->type == FR_EAP_METHOD_AKA_PRIME) {
+		/*
+		 *	Copy the network name the user specified for
+		 *	key derivation purposes.
+		 */
+		vp = fr_pair_find_by_da(to_peer, attr_eap_aka_sim_kdf_input, TAG_ANY);
+		if (vp) {
+			talloc_free(eap_aka_session->keys.network);
+			eap_aka_session->keys.network = talloc_memdup(eap_aka_session,
+								      (uint8_t const *)vp->vp_strvalue, vp->vp_length);
+			eap_aka_session->keys.network_len = vp->vp_length;
+		} else {
+			REDEBUG2("No network name available, can't set AT_KDF_INPUT");
+		failure:
+			return aka_failure_notification_enter(inst, request, eap_session);
+		}
+
+		/*
+		 *	We don't allow the user to specify
+		 *	the KDF currently.
+		 */
+		MEM(pair_update_reply(&vp, attr_eap_aka_sim_kdf) >= 0);
+		vp->vp_uint16 = eap_aka_session->kdf;
+	}
+
+	/*
+	 *	Get vectors from attribute or generate
+	 *	them using COMP128-* or Milenage.
+	 */
+	if (fr_aka_sim_vector_umts_from_attrs(request, request->control, &eap_aka_session->keys, &src) != 0) {
+	    	REDEBUG("Failed retrieving UMTS vectors");
+		goto failure;
+	}
+
+	/*
+	 *	Don't leave the AMF hanging around
+	 */
+	if (eap_aka_session->type == FR_EAP_METHOD_AKA_PRIME) pair_delete_control(attr_sim_amf);
+
+	/*
+	 *	All set, calculate keys!
+	 */
+	switch (eap_aka_session->kdf) {
+	case FR_KDF_VALUE_PRIME_WITH_CK_PRIME_IK_PRIME:
+		fr_aka_sim_crypto_kdf_1_umts(&eap_aka_session->keys);
+		break;
+
+	default:
+		fr_aka_sim_crypto_kdf_0_umts(&eap_aka_session->keys);
+		break;
+	}
+	if (RDEBUG_ENABLED3) fr_aka_sim_crypto_keys_log(request, &eap_aka_session->keys);
+
+	RDEBUG2("Sending AKA-Challenge");
+	eap_session->this_round->request->code = FR_EAP_CODE_REQUEST;
+
+	/*
+	 *	Set the subtype to challenge
+	 */
+	MEM(pair_update_reply(&vp, attr_eap_aka_sim_subtype) >= 0);
+	vp->vp_uint16 = FR_SUBTYPE_VALUE_AKA_CHALLENGE;
+
+	/*
+	 *	Indicate we'd like to use protected success messages
+	 *	with AT_RESULT_IND
+	 *
+	 *	Use our default, but allow user override too.
+	 */
+	vp = fr_pair_find_by_da(to_peer, attr_eap_aka_sim_result_ind, TAG_ANY);
+	if (vp) eap_aka_session->send_result_ind = vp->vp_bool;
+
+	/*
+	 *	See if we're indicating we want EAP-AKA'
+	 *	If so include AT_BIDDING with the correct
+	 *	value.
+	 */
+	vp = fr_pair_find_by_da(to_peer, attr_eap_aka_sim_bidding, TAG_ANY);
+	if (vp) {
+		eap_aka_session->send_at_bidding_prefer_prime =
+			(vp->vp_uint16 == FR_BIDDING_VALUE_PREFER_AKA_PRIME);
+	}
+
+	/*
+	 *	These attributes are only allowed with
+	 *	EAP-AKA', protect users from themselves.
+	 */
+	if (eap_aka_session->type == FR_EAP_METHOD_AKA) {
+		pair_delete_reply(attr_eap_aka_sim_kdf_input);
+		pair_delete_reply(attr_eap_aka_sim_kdf);
+	}
+
+	/*
+	 *	Okay, we got the challenge! Put it into an attribute.
+	 */
+	MEM(pair_update_reply(&vp, attr_eap_aka_sim_rand) >= 0);
+	fr_pair_value_memcpy(vp, eap_aka_session->keys.umts.vector.rand, AKA_SIM_VECTOR_UMTS_RAND_SIZE, false);
+
+	/*
+	 *	Send the AUTN value to the client, so it can authenticate
+	 *	whoever has knowledge of the Ki.
+	 */
+	MEM(pair_update_reply(&vp, attr_eap_aka_sim_autn) >= 0);
+	fr_pair_value_memcpy(vp, eap_aka_session->keys.umts.vector.autn, AKA_SIM_VECTOR_UMTS_AUTN_SIZE, false);
+
+	/*
+	 *	need to include an AT_MAC attribute so that it will get
+	 *	calculated.
+	 */
+	MEM(pair_update_reply(&vp, attr_eap_aka_sim_mac) >= 0);
+	fr_pair_value_memcpy(vp, NULL, 0, false);
+
+	/*
+	 *	If we have checkcode data, send that to the peer
+	 *	in AT_CHECKCODE for validation.
+	 */
+	if (eap_aka_session->checkcode_state) {
+		ssize_t	slen;
+
+		slen = fr_aka_sim_crypto_finalise_checkcode(eap_aka_session->checkcode, &eap_aka_session->checkcode_state);
+		if (slen < 0) {
+			RPEDEBUG("Failed calculating checkcode");
+			goto failure;
+		}
+		eap_aka_session->checkcode_len = slen;
+
+		MEM(pair_update_reply(&vp, attr_eap_aka_sim_checkcode) >= 0);
+		fr_pair_value_memcpy(vp, eap_aka_session->checkcode, slen, false);
+	/*
+	 *	If we don't have checkcode data, then we exchanged
+	 *	no identity packets, so AT_CHECKCODE is zero.
+	 */
+	} else {
+		MEM(pair_update_reply(&vp, attr_eap_aka_sim_checkcode) >= 0);
+		fr_pair_value_memcpy(vp, NULL, 0, false);
+		eap_aka_session->checkcode_len = 0;
+	}
+
+	/*
+	 *	We've sent the challenge so the peer should now be able
+	 *	to accept encrypted attributes.
+	 */
+	eap_aka_session->allow_encrypted = true;
+
+	return session_and_pseudonym_store(inst, request, eap_session, aka_challenge_request_send);
 }
 
 /** Send an EAP-AKA identity request to the supplicant
@@ -224,596 +1362,698 @@ static int eap_aka_compose(eap_session_t *eap_session)
  * or can't perform fast resumption, we need to request the full identity from
  * the supplicant.
  *
+ * @param[in] request		The current subrequest.
  * @param[in] eap_session	to continue.
  * @return
- *	- 0 on success.
- *	- <0 on failure.
+ *	- RLM_MODULE_HANDLED on success.
+ *	- anything else on failure.
  */
-static int eap_aka_send_identity_request(eap_session_t *eap_session)
+static rlm_rcode_t aka_identity_request_send(rlm_eap_aka_t *inst, REQUEST *request, eap_session_t *eap_session)
 {
-	REQUEST			*request = eap_session->request;
 	eap_aka_session_t	*eap_aka_session = talloc_get_type_abort(eap_session->opaque, eap_aka_session_t);
 	VALUE_PAIR		*vp;
-	RADIUS_PACKET		*packet;
-	fr_cursor_t		cursor;
 
-	RDEBUG2("Sending AKA-Identity (%s)", fr_int2str(sim_id_request_table, eap_aka_session->id_req, "<INVALID>"));
+	RDEBUG2("Sending AKA-Identity %s", fr_int2str(fr_aka_sim_id_request_table, eap_aka_session->id_req, "<INVALID>"));
 	eap_session->this_round->request->code = FR_EAP_CODE_REQUEST;
-	eap_aka_session->allow_encrypted = false;	/* In case this is after failed fast-resumption */
-
-	packet = request->reply;
-	fr_cursor_init(&cursor, &packet->vps);
 
 	/*
 	 *	Set the subtype to identity request
 	 */
-	vp = fr_pair_afrom_da(packet, attr_eap_aka_subtype);
-	vp->vp_uint16 = FR_EAP_AKA_SUBTYPE_VALUE_AKA_IDENTITY;
-	fr_cursor_append(&cursor, vp);
+	MEM(pair_update_reply(&vp, attr_eap_aka_sim_subtype) >= 0);
+	vp->vp_uint16 = FR_SUBTYPE_VALUE_IDENTITY;
+
+	/*
+	 *	Update eap_aka_session->id_req in case the the
+	 *	user set attributes in `send Identity-Request { ... }`
+	 *	Also removes all existing id_req attributes
+	 *	from the reply.
+	 */
+	id_req_set_by_user(request, eap_aka_session);
 
 	/*
 	 *	Select the right type of identity request attribute
+	 *
+	 *      Implement checks on identity request order described
+	 *	by RFC4187 section 4.1.5.
+	 *
+	 *	The internal state machine should always handle this
+	 *	correctly, but the user may have other ideas...
 	 */
 	switch (eap_aka_session->id_req) {
-	case SIM_ANY_ID_REQ:
-		vp = fr_pair_afrom_da(packet, attr_eap_aka_any_id_req);
+	case AKA_SIM_ANY_ID_REQ:
+		if (eap_aka_session->last_id_req != AKA_SIM_NO_ID_REQ) {
+		id_out_of_order:
+			REDEBUG("Cannot send %s, already sent %s",
+				fr_int2str(fr_aka_sim_id_request_table, eap_aka_session->id_req, "<INVALID>"),
+				fr_int2str(fr_aka_sim_id_request_table, eap_aka_session->last_id_req, "<INVALID>"));
+			return aka_failure_notification_enter(inst, request, eap_session);
+		}
+		MEM(pair_add_reply(&vp, attr_eap_aka_sim_any_id_req) >= 0);
+		vp->vp_bool = true;
 		break;
 
-	case SIM_PERMANENT_ID_REQ:
-		vp = fr_pair_afrom_da(packet, attr_eap_aka_permanent_id_req);
+	case AKA_SIM_FULLAUTH_ID_REQ:
+		switch (eap_aka_session->last_id_req) {
+		case AKA_SIM_NO_ID_REQ:		/* Not sent anything before */
+		case AKA_SIM_ANY_ID_REQ:		/* Last request was for any ID, but the re-auth ID was bad */
+			break;
+
+		default:
+			goto id_out_of_order;
+
+		}
+		MEM(pair_add_reply(&vp, attr_eap_aka_sim_fullauth_id_req) >= 0);
+		vp->vp_bool = true;
 		break;
 
-	case SIM_FULLAUTH_ID_REQ:
-		vp = fr_pair_afrom_da(packet, attr_eap_aka_fullauth_id_req);
+	case AKA_SIM_PERMANENT_ID_REQ:
+		switch (eap_aka_session->last_id_req) {
+		case AKA_SIM_NO_ID_REQ:		/* Not sent anything before */
+		case AKA_SIM_ANY_ID_REQ:		/* Last request was for any ID, but the re-auth ID was bad */
+		case AKA_SIM_FULLAUTH_ID_REQ:	/* ...didn't understand the pseudonym either */
+			break;
+
+		default:
+			goto id_out_of_order;
+
+		}
+		MEM(pair_add_reply(&vp, attr_eap_aka_sim_permanent_id_req) >= 0);
+		vp->vp_bool = true;
 		break;
 
 	default:
 		rad_assert(0);
 	}
-	vp->vp_bool = true;
-	fr_cursor_append(&cursor, vp);
+	eap_aka_session->last_id_req = eap_aka_session->id_req;	/* Record what we last requested */
 
 	/*
 	 *	Encode the packet
 	 */
-	if (eap_aka_compose(eap_session) < 0) {
+	if (aka_encode(request, eap_session) < 0) {
 	failure:
-		fr_pair_list_free(&packet->vps);
-		return -1;
+		return aka_failure_notification_enter(inst, request, eap_session);
 	}
 
 	/*
 	 *	Digest the packet contents, updating our checkcode.
 	 */
 	if (!eap_aka_session->checkcode_state &&
-	    fr_sim_crypto_init_checkcode(eap_aka_session, &eap_aka_session->checkcode_state,
+	    fr_aka_sim_crypto_init_checkcode(eap_aka_session, &eap_aka_session->checkcode_state,
 	    				 eap_aka_session->checkcode_md) < 0) {
 		RPEDEBUG("Failed initialising checkcode");
 		goto failure;
 	}
-	if (fr_sim_crypto_update_checkcode(eap_aka_session->checkcode_state, eap_session->this_round->request) < 0) {
+	if (fr_aka_sim_crypto_update_checkcode(eap_aka_session->checkcode_state, eap_session->this_round->request) < 0) {
 		RPEDEBUG("Failed updating checkcode");
 		goto failure;
 	}
 
-	return 0;
+	return RLM_MODULE_HANDLED;
 }
 
-/** Send the challenge itself
+/** Print debugging information, and write new state to eap_session->process
  *
- * Challenges will come from one of three places eventually:
- *
- * 1  from attributes like FR_EAP_AKA_RANDx
- *	    (these might be retrieved from a database)
- *
- * 2  from internally implemented SIM authenticators
- *	    (a simple one based upon XOR will be provided)
- *
- * 3  from some kind of SS7 interface.
- *
- * For now, they only come from attributes.
- * It might be that the best way to do 2/3 will be with a different
- * module to generate/calculate things.
  */
-static int eap_aka_send_challenge(eap_session_t *eap_session)
+static inline void state_transition(REQUEST *request, eap_session_t *eap_session,
+					    module_method_t new_state)
 {
-	REQUEST			*request = eap_session->request;
+	module_method_t		old_state = eap_session->process;
+
+	if (new_state != old_state) {
+		RDEBUG2("Changed eap_aka_state %s -> %s",
+			module_state_method_to_str(aka_state_table, old_state, "<unknown>"),
+			module_state_method_to_str(aka_state_table, new_state, "<unknown>"));
+	} else {
+		RDEBUG2("Reentering eap_aka_state %s",
+			module_state_method_to_str(aka_state_table, old_state, "<unknown>"));
+	}
+
+	eap_session->process = new_state;
+}
+
+/** Resume function after 'send EAP-Failure { ... }'
+ *
+ */
+static rlm_rcode_t aka_eap_failure_enter_resume(UNUSED void *instance, UNUSED void *thread,
+					    REQUEST *request, UNUSED void *rctx)
+{
+	eap_session_t	*eap_session = eap_session_get(request->parent);
+
+	section_rcode_ignored(request);
+
+	return aka_eap_failure_send(request, eap_session);
+}
+
+/** Enter eap_aka_state FAILURE - Send an EAP-Failure message
+ *
+ */
+static rlm_rcode_t aka_eap_failure_enter(rlm_eap_aka_t *inst, REQUEST *request, eap_session_t *eap_session)
+{
+	eap_aka_session_t *eap_aka_session = talloc_get_type_abort(eap_session->opaque, eap_aka_session_t);
+
+	/*
+	 *	Free anything we were going to send out...
+	 */
+	fr_pair_list_free(&request->reply->vps);
+
+	/*
+	 *	If we're failing, then any identities
+	 *	we sent are now invalid.
+	 */
+	if (eap_aka_session->pseudonym_sent || eap_aka_session->fastauth_sent) {
+		return session_and_pseudonym_clear(inst,
+						   request, eap_session, aka_eap_failure_enter); /* come back when we're done */
+	}
+
+	state_transition(request, eap_session, aka_eap_failure);
+
+	return unlang_module_yield_to_section(request,
+					      inst->actions.send_eap_failure,
+					      RLM_MODULE_NOOP,
+					      aka_eap_failure_enter_resume,
+					      mod_signal,
+					      NULL);
+}
+
+/** Resume function after 'send Failure-Notification { ... }'
+ *
+ * Ignores return code from send Failure-Notification { ... } section.
+ */
+static rlm_rcode_t aka_failure_notification_enter_resume(void *instance, UNUSED void *thread,
+							 REQUEST *request, UNUSED void *rctx)
+{
+	rlm_eap_aka_t	*inst = talloc_get_type_abort(instance, rlm_eap_aka_t);
+	eap_session_t	*eap_session = eap_session_get(request->parent);
+
+	section_rcode_ignored(request);
+
+	/*
+	 *	Free anything we were going to send out...
+	 */
+	fr_pair_list_free(&request->reply->vps);
+
+	/*
+	 *	If there's an issue composing the failure
+	 *      message just send an EAP-Failure instead.
+	 */
+	return aka_failure_notification_send(inst, request, eap_session);
+}
+
+/** Enter eap_aka_state FAILURE-NOTIFICATION - Send an EAP-Request/AKA-Notification (failure) message
+ *
+ */
+static rlm_rcode_t aka_failure_notification_enter(rlm_eap_aka_t *inst,
+						  REQUEST *request, eap_session_t *eap_session)
+{
 	eap_aka_session_t	*eap_aka_session = talloc_get_type_abort(eap_session->opaque, eap_aka_session_t);
-	VALUE_PAIR		**to_peer, *vp;
-	RADIUS_PACKET		*packet;
-	fr_sim_vector_src_t	src = SIM_VECTOR_SRC_AUTO;
-
-	rad_assert(request);
-	rad_assert(request->reply);
 
 	/*
-	 *	to_peer is the data to the client
+	 *	If we're failing, then any identities
+	 *	we sent are now invalid.
 	 */
-	packet = eap_session->request->reply;
-	to_peer = &packet->vps;
-
-	RDEBUG2("Acquiring UMTS vector(s)");
-
-	/*
-	 *	Toggle the AMF high bit to indicate we're doing AKA'
-	 */
-	if (eap_aka_session->type == FR_EAP_METHOD_AKA_PRIME) {
-		uint8_t	amf_buff[2] = { 0x80, 0x00 };	/* Set the AMF separation bit high */
-
-		MEM(pair_update_control(&vp, attr_sim_amf) >= 0);
-		fr_pair_value_memcpy(vp, amf_buff, sizeof(amf_buff), false);
+	if (eap_aka_session->pseudonym_sent || eap_aka_session->fastauth_sent) {
+		return session_and_pseudonym_clear(inst, request, eap_session, aka_failure_notification_enter); /* come back when we're done */
 	}
 
 	/*
-	 *	Get vectors from attribute or generate
-	 *	them using COMP128-* or Milenage.
+	 *	We've already sent a failure notification
+	 *	Now we just fail as it means something
+	 *	went wrong processing the ACK or we got
+	 *	garbage from the supplicant.
 	 */
-	if (fr_sim_vector_umts_from_attrs(request, request->control, &eap_aka_session->keys, &src) != 0) {
-	    	REDEBUG("Failed retrieving UMTS vectors");
-		return RLM_MODULE_FAIL;
+	if (eap_session->process == aka_failure_notification) {
+		return aka_eap_failure_enter(inst, request, eap_session);
 	}
 
 	/*
-	 *	Don't leave the AMF hanging around
+	 *	Otherwise just transition as normal...
 	 */
-	if (eap_aka_session->type == FR_EAP_METHOD_AKA_PRIME) pair_delete_control(attr_sim_amf);
+	state_transition(request, eap_session, aka_failure_notification);
+
+	return unlang_module_yield_to_section(request,
+					      inst->actions.send_failure_notification,
+					      RLM_MODULE_NOOP,
+					      aka_failure_notification_enter_resume,
+					      mod_signal,
+					      NULL);
+}
+
+/** Resume function after 'send EAP-Success { ... }'
+ *
+ */
+static rlm_rcode_t aka_eap_success_enter_resume(void *instance, UNUSED void *thread,
+						  REQUEST *request, UNUSED void *rctx)
+{
+	rlm_eap_aka_t		*inst = talloc_get_type_abort(instance, rlm_eap_aka_t);
+	eap_session_t		*eap_session = eap_session_get(request->parent);
+
+	eap_aka_session_t	*eap_aka_session = talloc_get_type_abort(eap_session->opaque, eap_aka_session_t);
 
 	/*
-	 *	All set, calculate keys!
-	 */
-	switch (eap_aka_session->kdf) {
-	case FR_EAP_AKA_KDF_VALUE_EAP_AKA_PRIME_WITH_CK_PRIME_IK_PRIME:
-		fr_sim_crypto_kdf_1_umts(&eap_aka_session->keys);
-		break;
-
-	default:
-		fr_sim_crypto_kdf_0_umts(&eap_aka_session->keys);
-		break;
-	}
-	if (RDEBUG_ENABLED3) fr_sim_crypto_keys_log(request, &eap_aka_session->keys);
-
-	RDEBUG2("Sending AKA-Challenge");
-	eap_session->this_round->request->code = FR_EAP_CODE_REQUEST;
-
-	/*
-	 *	Set the subtype to challenge
-	 */
-	MEM(vp = fr_pair_afrom_da(packet, attr_eap_aka_subtype));
-	vp->vp_uint16 = FR_EAP_AKA_SUBTYPE_VALUE_AKA_CHALLENGE;
-	fr_pair_replace(to_peer, vp);
-
-	/*
-	 *	Indicate we'd like to use protected success messages
+	 *	If this is true we're entering this state
+	 *	after sending a AKA-Success-Notification
+	 *
+	 *	Is seems like a really bad idea to allow the
+	 *	user to send a protected success to the
+	 *	supplicant and then force a failure using
+	 *	the send EAP-Success { ... } section.
 	 */
 	if (eap_aka_session->send_result_ind) {
-		MEM(vp = fr_pair_afrom_da(packet, attr_eap_aka_result_ind));
-		vp->vp_bool = true;
-		fr_pair_replace(to_peer, vp);
-	}
+		switch (request->rcode) {
+		case RLM_MODULE_USER_SECTION_REJECT:
+			RWDEBUG("Ignoring rcode (%s) from send EAP-Success { ... } "
+				"as we already sent an AKA-Success-Notification",
+				fr_int2str(mod_rcode_table, request->rcode, "<invalid>"));
+			RWDEBUG("If you need to force a failure, return an error code from "
+				"send Success-Notification { ... }");
+			break;
 
-	/*
-	 *	We support EAP-AKA' and the peer should use that
-	 *	if it's able to...
-	 */
-	if (eap_aka_session->send_at_bidding) {
-		MEM(vp = fr_pair_afrom_da(packet, attr_eap_aka_bidding));
-		vp->vp_uint16 = FR_EAP_AKA_BIDDING_VALUE_PREFER_AKA_PRIME;
-		fr_pair_replace(to_peer, vp);
-	}
-
-	/*
-	 *	Send the network name and KDF to the peer
-	 */
-	if (eap_aka_session->type == FR_EAP_METHOD_AKA_PRIME) {
-		if (!eap_aka_session->keys.network_len) {
-			REDEBUG2("No network name available, can't set EAP-AKA-KDF-Input");
-		failure:
-			fr_pair_list_free(&packet->vps);
-			return -1;
+		default:
+			break;
 		}
-		MEM(vp = fr_pair_afrom_da(packet, attr_eap_aka_kdf_input));
-		fr_pair_value_bstrncpy(vp, eap_aka_session->keys.network, eap_aka_session->keys.network_len);
-		fr_pair_replace(to_peer, vp);
-
-		MEM(vp = fr_pair_afrom_da(packet, attr_eap_aka_kdf));
-		vp->vp_uint16 = eap_aka_session->kdf;
-		fr_pair_replace(to_peer, vp);
-	}
 
 	/*
-	 *	Okay, we got the challenge! Put it into an attribute.
-	 */
-	MEM(vp = fr_pair_afrom_da(packet, attr_eap_aka_rand));
-	fr_pair_value_memcpy(vp, eap_aka_session->keys.umts.vector.rand, SIM_VECTOR_UMTS_RAND_SIZE, false);
-	fr_pair_replace(to_peer, vp);
-
-	/*
-	 *	Send the AUTN value to the client, so it can authenticate
-	 *	whoever has knowledge of the Ki.
-	 */
-	MEM(vp = fr_pair_afrom_da(packet, attr_eap_aka_autn));
-	fr_pair_value_memcpy(vp, eap_aka_session->keys.umts.vector.autn, SIM_VECTOR_UMTS_AUTN_SIZE, false);
-	fr_pair_replace(to_peer, vp);
-
-	/*
-	 *	need to include an AT_MAC attribute so that it will get
-	 *	calculated.
-	 */
-	MEM(vp = fr_pair_afrom_da(packet, attr_eap_aka_mac));
-	fr_pair_replace(to_peer, vp);
-
-	/*
-	 *	If we have checkcode data, send that to the peer
-	 *	for validation.
-	 */
-	if (eap_aka_session->checkcode_state) {
-		ssize_t	slen;
-
-		slen = fr_sim_crypto_finalise_checkcode(eap_aka_session->checkcode, &eap_aka_session->checkcode_state);
-		if (slen < 0) {
-			RPEDEBUG("Failed calculating checkcode");
-			goto failure;
-		}
-		eap_aka_session->checkcode_len = slen;
-
-		MEM(vp = fr_pair_afrom_da(packet, attr_eap_aka_checkcode));
-		fr_pair_value_memcpy(vp, eap_aka_session->checkcode, slen, false);
-	/*
-	 *	If we don't have checkcode data, then we exchanged
-	 *	no identity packets, so checkcode is zero.
+	 *	But... if we're not working with protected
+	 *	success indication, this is the only
+	 *	opportunity the user has to force a failure at
+	 *	the end of authentication.
 	 */
 	} else {
-		MEM(vp = fr_pair_afrom_da(packet, attr_eap_aka_checkcode));
-		eap_aka_session->checkcode_len = 0;
+		section_rcode_process(inst, request, eap_session);
 	}
-	fr_pair_replace(to_peer, vp);
 
-	/*
-	 *	We've sent the challenge so the peer should now be able
-	 *	to accept encrypted attributes.
-	 */
-	eap_aka_session->allow_encrypted = true;
-
-	/*
-	 *	Encode the packet
-	 */
-	if (eap_aka_compose(eap_session) < 0) goto failure;
-
-	return 0;
+	return aka_eap_success_send(request, eap_session);
 }
 
-/** Send a success notification
+/** Enter eap_aka_state SUCCESS - Send an EAP-Success message
  *
  */
-static int eap_aka_send_eap_success_notification(eap_session_t *eap_session)
+static rlm_rcode_t aka_eap_success_enter(rlm_eap_aka_t *inst, REQUEST *request, eap_session_t *eap_session)
 {
-	REQUEST			*request = eap_session->request;
-	RADIUS_PACKET		*packet = eap_session->request->reply;
+	state_transition(request, eap_session, aka_eap_success);
+
+	return unlang_module_yield_to_section(request,
+					      inst->actions.send_eap_success,
+					      RLM_MODULE_NOOP,
+					      aka_eap_success_enter_resume,
+					      mod_signal,
+					      NULL);
+}
+
+/** Resume function after 'send Success-Notification { ... }'
+ *
+ */
+static rlm_rcode_t aka_success_notification_enter_resume(void *instance, UNUSED void *thread,
+							       REQUEST *request, UNUSED void *rctx)
+{
+	rlm_eap_aka_t	*inst = talloc_get_type_abort(instance, rlm_eap_aka_t);
+	eap_session_t	*eap_session = eap_session_get(request->parent);
+
+	section_rcode_process(inst, request, eap_session);
+
+	return aka_success_notification_send(inst, request, eap_session);
+}
+
+/** Enter eap_aka_state SUCCESS-NOTIFICATION - Send an EAP-Request/AKA-Notification (success) message
+ *
+ */
+static rlm_rcode_t aka_success_notification_enter(rlm_eap_aka_t *inst,
+							REQUEST *request, eap_session_t *eap_session)
+{
+	state_transition(request, eap_session, aka_success_notification);
+
+	return unlang_module_yield_to_section(request,
+					      inst->actions.send_success_notification,
+					      RLM_MODULE_NOOP,
+					      aka_success_notification_enter_resume,
+					      mod_signal,
+					      NULL);
+}
+
+/** Resume function after 'send Reauthentication-Request' - Send an EAP-Request/reauthentication message
+ *
+ */
+static rlm_rcode_t aka_reauthentication_send_resume(UNUSED void *instance, UNUSED void *thread,
+				       		    REQUEST *request, UNUSED void *rctx)
+{
+	rlm_eap_aka_t		*inst = talloc_get_type_abort(instance, rlm_eap_aka_t);
+	eap_session_t		*eap_session = eap_session_get(request->parent);
 	eap_aka_session_t	*eap_aka_session = talloc_get_type_abort(eap_session->opaque, eap_aka_session_t);
-	fr_cursor_t		cursor;
+
+	switch (request->rcode) {
+	/*
+	 *	Failed getting the values we need for resumption
+	 *	Request a different identity.
+	 */
+	default:
+		switch (eap_aka_session->last_id_req) {
+		/*
+		 *	Got here processing EAP-Identity-Response
+		 *	If this is the *true* reauth ID, then
+		 *	there's no point in setting AKA_SIM_ANY_ID_REQ.
+		 */
+		case AKA_SIM_NO_ID_REQ:
+		case AKA_SIM_ANY_ID_REQ:
+			eap_aka_session->id_req = AKA_SIM_FULLAUTH_ID_REQ;
+			return aka_identity_enter(inst, request, eap_session);
+
+		case AKA_SIM_FULLAUTH_ID_REQ:
+		case AKA_SIM_PERMANENT_ID_REQ:
+			REDEBUG("Last requested Full-Auth-Id or Permanent-Id, "
+				"but received a Fast-Auth-Id.  Cannot continue");
+			return aka_failure_notification_enter(inst, request, eap_session);
+
+		}
+
+	/*
+	 *	Policy rejected the user
+	 */
+	case RLM_MODULE_REJECT:
+	case RLM_MODULE_USERLOCK:
+		return aka_failure_notification_enter(inst, request, eap_session);
+
+	/*
+	 *	Everything looks ok, send the EAP-Request/reauthentication message
+	 *	After storing any new pseudonyms or session information.
+	 */
+	case RLM_MODULE_NOOP:
+	case RLM_MODULE_OK:
+	case RLM_MODULE_UPDATED:
+		return aka_reauthentication_request_compose(inst, request, eap_session);
+	}
+}
+
+/** Resume function after 'load session' - Send an EAP-Request/reauthentication message
+ *
+ */
+static rlm_rcode_t session_load_resume(void *instance, UNUSED void *thread,
+				       REQUEST *request, UNUSED void *rctx)
+{
+	rlm_eap_aka_t		*inst = talloc_get_type_abort(instance, rlm_eap_aka_t);
+	eap_session_t		*eap_session = eap_session_get(request->parent);
+	eap_aka_session_t	*eap_aka_session = talloc_get_type_abort(eap_session->opaque, eap_aka_session_t);
+
+	pair_delete_request(attr_session_id);
+
+	/*
+	 *	Control attributes required could have been specified
+	 *      in another section.
+	 */
+	if (!inst->actions.load_session) goto reauthenticate;
+
+	switch (request->rcode) {
+	/*
+	 *	Failed getting the values we need for resumption
+	 *	Request a different identity.
+	 */
+	default:
+		switch (eap_aka_session->last_id_req) {
+		/*
+		 *	Got here processing EAP-Identity-Response
+		 *	If this is the *true* reauth ID, then
+		 *	there's no point in setting AKA_SIM_ANY_ID_REQ.
+		 */
+		case AKA_SIM_NO_ID_REQ:
+		case AKA_SIM_ANY_ID_REQ:
+			RDEBUG2("Previous section returned (%s), requesting additional identity",
+				fr_int2str(rcode_table, request->rcode, "<INVALID>"));
+			eap_aka_session->id_req = AKA_SIM_FULLAUTH_ID_REQ;
+			return aka_identity_enter(inst, request, eap_session);
+
+		case AKA_SIM_FULLAUTH_ID_REQ:
+		case AKA_SIM_PERMANENT_ID_REQ:
+			REDEBUG("Last requested Full-Auth-Id or Permanent-Id, "
+				"but received a Fast-Auth-Id.  Cannot continue");
+			return aka_failure_notification_enter(inst, request, eap_session);
+
+		}
+
+	/*
+	 *	Policy rejected the user
+	 */
+	case RLM_MODULE_REJECT:
+	case RLM_MODULE_USERLOCK:
+		return aka_failure_notification_enter(inst, request, eap_session);
+
+	/*
+	 *	Everything OK
+	 */
+	case RLM_MODULE_OK:
+	case RLM_MODULE_UPDATED:
+	reauthenticate:
+		return unlang_module_yield_to_section(request,
+						      inst->actions.send_reauthentication_request,
+						      RLM_MODULE_NOOP,
+						      aka_reauthentication_send_resume,
+						      mod_signal,
+						      NULL);
+	}
+}
+
+/** Resume function after 'load pseudonym { ... }' - Send an EAP-Request/AKA-Challenge message
+ *
+ */
+static rlm_rcode_t pseudonym_load_resume(void *instance, UNUSED void *thread,
+					 REQUEST *request, UNUSED void *rctx)
+{
+	rlm_eap_aka_t		*inst = talloc_get_type_abort(instance, rlm_eap_aka_t);
+	eap_session_t		*eap_session = eap_session_get(request->parent);
+	eap_aka_session_t	*eap_aka_session = talloc_get_type_abort(eap_session->opaque, eap_aka_session_t);
+
+	pair_delete_request(attr_eap_aka_sim_next_reauth_id);
+
+	/*
+	 *	Control attributes required could have been specified
+	 *      in another section.
+	 */
+	if (!inst->actions.load_pseudonym) goto enter_challenge;
+
+	switch (request->rcode) {
+	/*
+	 *	Failed resolving the pseudonym
+	 *	request a different identity.
+	 */
+	default:
+		switch (eap_aka_session->last_id_req) {
+		case AKA_SIM_NO_ID_REQ:
+		case AKA_SIM_ANY_ID_REQ:
+		case AKA_SIM_FULLAUTH_ID_REQ:
+			RDEBUG2("Previous section returned (%s), requesting additional identity",
+				fr_int2str(rcode_table, request->rcode, "<INVALID>"));
+			eap_aka_session->id_req = AKA_SIM_PERMANENT_ID_REQ;
+			return aka_identity_enter(inst, request, eap_session);
+
+		case AKA_SIM_PERMANENT_ID_REQ:
+			REDEBUG("Last requested a Permanent-Id, but received a Pseudonym.  Cannot continue");
+			return aka_failure_notification_enter(inst, request, eap_session);
+		}
+	/*
+	 *	Policy rejected the user
+	 */
+	case RLM_MODULE_REJECT:
+	case RLM_MODULE_USERLOCK:
+		return aka_failure_notification_enter(inst, request, eap_session);
+
+	/*
+	 *	Everything OK
+	 */
+	case RLM_MODULE_OK:
+	case RLM_MODULE_UPDATED:
+	enter_challenge:
+		return aka_challenge_enter(inst, request, eap_session);
+	}
+}
+
+/** Enter eap_aka_state REAUTHENTICATION - Send an EAP-Request/AKA-Reauthentication message
+ *
+ */
+static rlm_rcode_t aka_reauthentication_enter(rlm_eap_aka_t *inst,
+					      REQUEST *request, eap_session_t *eap_session)
+{
+	VALUE_PAIR		*vp = NULL;
+	eap_aka_session_t	*eap_aka_session = talloc_get_type_abort(eap_session->opaque, eap_aka_session_t);
+
+	state_transition(request, eap_session, aka_reauthentication);
+
+	/*
+	 *	Add the current identity as session_id
+	 *      to make it easier to load/store things from
+	 *	the cache module.
+	 */
+	MEM(pair_update_request(&vp, attr_session_id) >= 0);
+	fr_pair_value_memcpy(vp, eap_aka_session->keys.identity, eap_aka_session->keys.identity_len, true);
+
+	return unlang_module_yield_to_section(request,
+					      inst->actions.load_session,
+					      RLM_MODULE_NOOP,
+					      session_load_resume,
+					      mod_signal,
+					      NULL);
+}
+
+/** Resume function after 'send Challenge-Request { ... }'
+ *
+ */
+static rlm_rcode_t aka_challenge_enter_resume(void *instance, UNUSED void *thread, REQUEST *request, UNUSED void *rctx)
+{
+	rlm_eap_aka_t	*inst = talloc_get_type_abort(instance, rlm_eap_aka_t);
+	eap_session_t	*eap_session = eap_session_get(request->parent);
+
+	section_rcode_process(inst, request, eap_session);
+
+	return aka_challenge_request_compose(inst, request, eap_session);
+}
+
+/** Enter eap_aka_state CHALLENGE - Send an EAP-Request/AKA-Challenge message
+ *
+ */
+static rlm_rcode_t aka_challenge_enter(rlm_eap_aka_t *inst,
+				       REQUEST *request, eap_session_t *eap_session)
+{
+	eap_aka_session_t	*eap_aka_session = talloc_get_type_abort(eap_session->opaque, eap_aka_session_t);
 	VALUE_PAIR		*vp;
 
-	RDEBUG2("Sending AKA-Notification (Success)");
-	eap_session->this_round->request->code = FR_EAP_CODE_REQUEST;
-
-	if (!fr_cond_assert(eap_aka_session->challenge_success)) return -1;
-
-	fr_cursor_init(&cursor, &packet->vps);
-
 	/*
-	 *	Set the subtype to notification
+	 *	If we've sent either of these identities it
+	 *	means we've come here form a Reauthentication-Request
+	 *	that failed.
 	 */
-	vp = fr_pair_afrom_da(packet, attr_eap_aka_subtype);
-	vp->vp_uint16 = FR_EAP_AKA_SUBTYPE_VALUE_AKA_NOTIFICATION;
-	fr_cursor_append(&cursor, vp);
-
-	vp = fr_pair_afrom_da(packet, attr_eap_aka_notification);
-	vp->vp_uint16 = FR_EAP_AKA_NOTIFICATION_VALUE_SUCCESS;
-	fr_cursor_append(&cursor, vp);
-
-	/*
-	 *	Need to include an AT_MAC attribute so that it will get
-	 *	calculated.
-	 */
-	vp = fr_pair_afrom_da(packet, attr_eap_aka_mac);
-	fr_pair_replace(&packet->vps, vp);
-
-	/*
-	 *	Encode the packet
-	 */
-	if (eap_aka_compose(eap_session) < 0) {
-		fr_pair_list_free(&packet->vps);
-		return -1;
+	if (eap_aka_session->pseudonym_sent || eap_aka_session->fastauth_sent) {
+		return session_and_pseudonym_clear(inst, request, eap_session, aka_challenge_enter);	/* come back when we're done */
 	}
 
-	return 0;
-}
-
-/** Send a success message with MPPE-keys
- *
- * The only work to be done is the add the appropriate SEND/RECV
- * attributes derived from the MSK.
- */
-static int eap_aka_send_eap_success(eap_session_t *eap_session)
-{
-	REQUEST			*request = eap_session->request;
-	uint8_t			*p;
-	eap_aka_session_t	*eap_aka_session;
-
-	RDEBUG2("Sending EAP-Success");
-
-	eap_session->this_round->request->code = FR_EAP_CODE_SUCCESS;
-	eap_session->finished = true;
-
-	eap_aka_session = talloc_get_type_abort(eap_session->opaque, eap_aka_session_t);
-
-	p = eap_aka_session->keys.msk;
-	eap_add_reply(eap_session->request, attr_ms_mppe_recv_key, p, EAP_TLS_MPPE_KEY_LEN);
-	p += EAP_TLS_MPPE_KEY_LEN;
-	eap_add_reply(eap_session->request, attr_ms_mppe_send_key, p, EAP_TLS_MPPE_KEY_LEN);
-
-	return 0;
-}
-
-/** Send a failure message
- *
- */
-static int eap_aka_send_eap_failure_notification(eap_session_t *eap_session)
-{
-	REQUEST			*request = eap_session->request;
-	RADIUS_PACKET		*packet = eap_session->request->reply;
-	fr_cursor_t		cursor;
-	VALUE_PAIR		*vp;
-	eap_aka_session_t	*eap_aka_session = talloc_get_type_abort(eap_session->opaque, eap_aka_session_t);
-
-	fr_cursor_init(&cursor, &packet->vps);
-
-	vp = fr_pair_find_by_da(packet->vps, attr_eap_aka_notification, TAG_ANY);
-	if (!vp) {
-		vp = fr_pair_afrom_da(packet, attr_eap_aka_notification);
-		vp->vp_uint16 = FR_EAP_AKA_NOTIFICATION_VALUE_GENERAL_FAILURE;
-		fr_cursor_append(&cursor, vp);
-	}
+	state_transition(request, eap_session, aka_challenge);
 
 	/*
-	 *	Change the failure notification depending where
-	 *	we are in the state machine.
+	 *	Set some default attributes, giving the user a
+	 *	chance to modify them.
 	 */
-	if (eap_aka_session->challenge_success) {
-		vp->vp_uint16 &= ~0x4000;	/* Unset phase bit */
-	} else {
-		vp->vp_uint16 |= 0x4000;	/* Set phase bit */
-	}
-	vp->vp_uint16 &= ~0x8000;		/* In both cases success bit should be low */
+	switch (eap_session->type) {
+	case FR_EAP_METHOD_AKA_PRIME:
+	{
+		uint8_t		amf_buff[2] = { 0x80, 0x00 };	/* Set the AMF separation bit high */
 
-	RDEBUG2("Sending AKA-Notification (%pV)", &vp->data);
-	eap_session->this_round->request->code = FR_EAP_CODE_REQUEST;
+		/*
+		 *	Toggle the AMF high bit to indicate we're doing AKA'
+		 */
+		MEM(pair_update_control(&vp, attr_sim_amf) >= 0);
+		fr_pair_value_memcpy(vp, amf_buff, sizeof(amf_buff), false);
 
-	/*
-	 *	Set the subtype to notification
-	 */
-	vp = fr_pair_afrom_da(packet, attr_eap_aka_subtype);
-	vp->vp_uint16 = FR_EAP_AKA_SUBTYPE_VALUE_AKA_NOTIFICATION;
-	fr_cursor_append(&cursor, vp);
-
-	/*
-	 *	If we're after the challenge phase
-	 *	then we need to include a MAC to
-	 *	protect notifications.
-	 */
-	if (eap_aka_session->challenge_success) {
-		vp = fr_pair_afrom_da(packet, attr_eap_aka_mac);
-		fr_pair_replace(&packet->vps, vp);
-	}
-
-	/*
-	 *	Encode the packet
-	 */
-	if (eap_aka_compose(eap_session) < 0) {
-		fr_pair_list_free(&packet->vps);
-		return -1;
-	}
-
-	return 0;
-}
-
-static int eap_aka_send_eap_failure(eap_session_t *eap_session)
-{
-	REQUEST		*request = eap_session->request;
-
-	RDEBUG2("Sending EAP-Failure");
-
-	eap_session->this_round->request->code = FR_EAP_CODE_FAILURE;
-	eap_session->finished = true;
-
-	return 0;
-}
-
-/** Run the server state machine
- *
- */
-static void eap_aka_state_enter(eap_session_t *eap_session, eap_aka_server_state_t new_state)
-{
-	REQUEST			*request = eap_session->request;
-	eap_aka_session_t	*eap_aka_session = talloc_get_type_abort(eap_session->opaque, eap_aka_session_t);
-
-	if (new_state != eap_aka_session->state) {
-		RDEBUG2("Changed state %s -> %s",
-			fr_int2str(aka_state_table, eap_aka_session->state, "<unknown>"),
-			fr_int2str(aka_state_table, new_state, "<unknown>"));
-		eap_aka_session->state = new_state;
-	} else {
-		RDEBUG2("Reentering state %s",
-			fr_int2str(aka_state_table, eap_aka_session->state, "<unknown>"));
-	}
-
-	switch (new_state) {
-	/*
-	 *	Send an EAP-AKA Identity request
-	 */
-	case EAP_AKA_SERVER_IDENTITY:
-		if (eap_aka_send_identity_request(eap_session) < 0) {
-		notify_failure:
-			eap_aka_state_enter(eap_session, EAP_AKA_SERVER_FAILURE_NOTIFICATION);
-			return;
+	        /*
+	 	 *	Use the default network name we have configured
+	 	 *	and send it to the peer.
+	 	 */
+		if (inst->network_name &&
+		    !fr_pair_find_by_da(request->reply->vps, attr_eap_aka_sim_kdf_input, TAG_ANY)) {
+			MEM(pair_add_reply(&vp, attr_eap_aka_sim_kdf_input) >= 0);
+			fr_pair_value_bstrncpy(vp, inst->network_name, talloc_array_length(inst->network_name) - 1);
 		}
+	}
 		break;
-
-	/*
-	 *	Send the EAP-AKA Challenge message.
-	 */
-	case EAP_AKA_SERVER_CHALLENGE:
-		if (eap_aka_send_challenge(eap_session) < 0) goto notify_failure;
-		break;
-
-	/*
-	 *	Sent a protected success notification
-	 */
-	case EAP_AKA_SERVER_SUCCESS_NOTIFICATION:
-		if (eap_aka_send_eap_success_notification(eap_session) < 0) goto notify_failure;
-		break;
-
-	/*
-	 *	Send the EAP Success message (we're done)
-	 */
-	case EAP_AKA_SERVER_SUCCESS:
-		if (eap_aka_send_eap_success(eap_session) < 0) goto notify_failure;
-		return;
-
-	/*
-	 *	Send a general failure notification
-	 */
-	case EAP_AKA_SERVER_FAILURE_NOTIFICATION:
-		if (eap_aka_send_eap_failure_notification(eap_session) < 0) {	/* Fallback to EAP-Failure */
-			eap_aka_state_enter(eap_session, EAP_AKA_SERVER_FAILURE);
-		}
-		return;
-
-	/*
-	 *	Send an EAP-Failure (we're done)
-	 */
-	case EAP_AKA_SERVER_FAILURE:
-		eap_aka_send_eap_failure(eap_session);
-		return;
 
 	default:
-		rad_assert(0);	/* Invalid transition */
-		eap_aka_state_enter(eap_session, EAP_AKA_SERVER_FAILURE_NOTIFICATION);
-		return;
-	}
-}
-
-static int process_eap_aka_identity(eap_session_t *eap_session, VALUE_PAIR *vps)
-{
-	REQUEST			*request = eap_session->request;
-	eap_aka_session_t	*eap_aka_session = talloc_get_type_abort(eap_session->opaque, eap_aka_session_t);
-	VALUE_PAIR		*id;
-	fr_sim_id_type_t	type = SIM_ID_TYPE_UNKNOWN;
-	fr_sim_method_hint_t	method = SIM_METHOD_HINT_UNKNOWN;
-
-	/*
-	 *	Digest the identity response
-	 */
-	if (fr_sim_crypto_update_checkcode(eap_aka_session->checkcode_state, eap_session->this_round->response) < 0) {
-		RPEDEBUG("Failed updating checkcode");
-		return -1;
-	}
-
-	/*
-	 *	See if we got an AT_IDENTITY
-	 */
-	id = fr_pair_find_by_da(vps, attr_eap_aka_identity, TAG_ANY);
-	if (id) {
-	 	if (fr_sim_id_type(&type, &method,
-				   eap_session->identity, talloc_array_length(eap_session->identity) - 1) < 0) {
-			RPWDEBUG2("Failed parsing identity");
-		}
 		/*
-		 *	Update cryptographic identity
+		 *	Use the default bidding value we have configured
 		 */
-		talloc_const_free(eap_aka_session->keys.identity);
-		eap_aka_session->keys.identity_len = id->vp_length;
-		MEM(eap_aka_session->keys.identity = talloc_memdup(eap_aka_session, id->vp_strvalue, id->vp_length));
+		if (eap_aka_session->send_at_bidding_prefer_prime &&
+		    !fr_pair_find_by_da(request->reply->vps, attr_eap_aka_sim_bidding, TAG_ANY)) {
+			MEM(pair_add_reply(&vp, attr_eap_aka_sim_bidding) >= 0);
+			vp->vp_uint16 = FR_BIDDING_VALUE_PREFER_AKA_PRIME;
+		}
+		break;
+
 	}
 
 	/*
-	 *	@TODO Run a virtual server to see if we can use the
-	 *	identity we just acquired, or whether we need to
-	 *	negotiate the next permissive ID.
+	 *	Set the defaults for protected result indicator
 	 */
-
-	/*
-	 *	Negotiate the next permissive form
-	 *	if identity, or fail.
-	 */
-	switch (eap_aka_session->id_req) {
-	case SIM_ANY_ID_REQ:
-		eap_aka_session->id_req = SIM_FULLAUTH_ID_REQ;
-		eap_aka_state_enter(eap_session, EAP_AKA_SERVER_IDENTITY);
-		break;
-
-	case SIM_FULLAUTH_ID_REQ:
-		eap_aka_session->id_req = SIM_PERMANENT_ID_REQ;
-		eap_aka_state_enter(eap_session, EAP_AKA_SERVER_IDENTITY);
-		break;
-
-	case SIM_PERMANENT_ID_REQ:
-		eap_aka_state_enter(eap_session, EAP_AKA_SERVER_CHALLENGE);
-//		REDEBUG2("Failed to negotiate a usable identity");
-//		eap_aka_state_enter(eap_session, eap_aka_session, EAP_AKA_SERVER_FAILURE_NOTIFICATION);
-		break;
-
-	case SIM_NO_ID_REQ:
-		rad_assert(0);
-		return -1;
+	if (eap_aka_session->send_result_ind &&
+	    !fr_pair_find_by_da(request->reply->vps, attr_eap_aka_sim_result_ind, TAG_ANY)) {
+	    	MEM(pair_add_reply(&vp, attr_eap_aka_sim_result_ind) >= 0);
+		vp->vp_bool = true;
 	}
 
-	return 0;
+	return unlang_module_yield_to_section(request,
+					      inst->actions.send_challenge_request,
+					      RLM_MODULE_NOOP,
+					      aka_challenge_enter_resume,
+					      mod_signal,
+					      NULL);
 }
 
-/**  Process an EAP-AKA/Response/Challenge
+/** Resume function after 'send AKA-Identity-Request { ... }'
  *
- * Verify that MAC, and RES match what we expect.
  */
-static int process_eap_aka_challenge(eap_session_t *eap_session, VALUE_PAIR *vps)
+static rlm_rcode_t aka_identity_enter_resume(void *instance, UNUSED void *thread,
+						   REQUEST *request, UNUSED void *rctx)
 {
-	REQUEST			*request = eap_session->request;
+	rlm_eap_aka_t	*inst = talloc_get_type_abort(instance, rlm_eap_aka_t);
+	eap_session_t	*eap_session = eap_session_get(request->parent);
+
+	section_rcode_process(inst, request, eap_session);
+
+	return aka_identity_request_send(inst, request, eap_session);
+}
+
+/** Enter eap_aka_state AKA-IDENTITY - Send an EAP-Request/AKA-Identity message
+ *
+ */
+static rlm_rcode_t aka_identity_enter(rlm_eap_aka_t *inst, REQUEST *request, eap_session_t *eap_session)
+{
+	state_transition(request, eap_session, aka_identity);
+
+	return unlang_module_yield_to_section(request,
+					      inst->actions.send_identity_request,
+					      RLM_MODULE_NOOP,
+					      aka_identity_enter_resume,
+					      mod_signal,
+					      NULL);
+}
+
+/** Process an EAP-Response/reauthentication message
+ *
+ */
+static rlm_rcode_t aka_reauthentication_response_process(rlm_eap_aka_t *inst, REQUEST *request,
+						       	 eap_session_t *eap_session)
+{
 	eap_aka_session_t	*eap_aka_session = talloc_get_type_abort(eap_session->opaque, eap_aka_session_t);
 
-	uint8_t			calc_mac[SIM_MAC_DIGEST_SIZE];
+	uint8_t			calc_mac[AKA_SIM_MAC_DIGEST_SIZE];
 	ssize_t			slen;
-	VALUE_PAIR		*vp = NULL, *mac, *checkcode;
+	VALUE_PAIR		*mac, *checkcode;
+	VALUE_PAIR		*from_peer = request->packet->vps;
 
-	mac = fr_pair_find_by_da(vps, attr_eap_aka_mac, TAG_ANY);
+	mac = fr_pair_find_by_da(from_peer, attr_eap_aka_sim_mac, TAG_ANY);
 	if (!mac) {
 		REDEBUG("Missing AT_MAC attribute");
-		return -1;
+		return aka_failure_notification_enter(inst, request, eap_session);
 	}
-	if (mac->vp_length != SIM_MAC_DIGEST_SIZE) {
-		REDEBUG("EAP-AKA-MAC has incorrect length, expected %u bytes got %zu bytes",
-			SIM_MAC_DIGEST_SIZE, mac->vp_length);
-		return -1;
+	if (mac->vp_length != AKA_SIM_MAC_DIGEST_SIZE) {
+		REDEBUG("MAC has incorrect length, expected %u bytes got %zu bytes",
+			AKA_SIM_MAC_DIGEST_SIZE, mac->vp_length);
+		return aka_failure_notification_enter(inst, request, eap_session);
 	}
 
-	slen = fr_sim_crypto_sign_packet(calc_mac, eap_session->this_round->response, true,
-					 eap_aka_session->mac_md,
-					 eap_aka_session->keys.k_aut, eap_aka_session->keys.k_aut_len,
-					 NULL, 0);
+	slen = fr_aka_sim_crypto_sign_packet(calc_mac, eap_session->this_round->response, true,
+					     eap_aka_session->mac_md,
+					     eap_aka_session->keys.k_aut, eap_aka_session->keys.k_aut_len,
+					     eap_aka_session->keys.reauth.nonce_s,
+					     sizeof(eap_aka_session->keys.reauth.nonce_s));
 	if (slen < 0) {
 		RPEDEBUG("Failed calculating MAC");
-		return -1;
+		return aka_failure_notification_enter(inst, request, eap_session);
 	} else if (slen == 0) {
-		REDEBUG("Missing EAP-AKA-MAC attribute in packet buffer");
-		return -1;
+		REDEBUG("Zero length AT_MAC attribute");
+		return aka_failure_notification_enter(inst, request, eap_session);
 	}
 
 	if (memcmp(mac->vp_octets, calc_mac, sizeof(calc_mac)) == 0) {
-		RDEBUG2("EAP-AKA-MAC matches calculated MAC");
+		RDEBUG2("Received MAC matches calculated MAC");
 	} else {
-		REDEBUG("EAP-AKA-MAC does not match calculated MAC");
-		RHEXDUMP_INLINE2(mac->vp_octets, SIM_MAC_DIGEST_SIZE, "Received");
-		RHEXDUMP_INLINE2(calc_mac, SIM_MAC_DIGEST_SIZE, "Expected");
-		return -1;
+		REDEBUG("Received MAC does not match calculated MAC");
+		RHEXDUMP_INLINE(L_DBG_LVL_2, mac->vp_octets, AKA_SIM_MAC_DIGEST_SIZE, "Received");
+		RHEXDUMP_INLINE(L_DBG_LVL_2, calc_mac, AKA_SIM_MAC_DIGEST_SIZE, "Expected");
+		return aka_failure_notification_enter(inst, request, eap_session);
 	}
 
 	/*
@@ -821,108 +2061,336 @@ static int process_eap_aka_challenge(eap_session_t *eap_session, VALUE_PAIR *vps
 	 *	means they don't support it, and we can't validate
 	 *	their view of the identity packets.
 	 */
-	checkcode = fr_pair_find_by_da(vps, attr_eap_aka_checkcode, TAG_ANY);
+	checkcode = fr_pair_find_by_da(from_peer, attr_eap_aka_sim_checkcode, TAG_ANY);
 	if (checkcode) {
 		if (checkcode->vp_length != eap_aka_session->checkcode_len) {
 			REDEBUG("Checkcode length (%zu) does not match calculated checkcode length (%zu)",
 				checkcode->vp_length, eap_aka_session->checkcode_len);
-			return -1;
+			return aka_failure_notification_enter(inst, request, eap_session);
 		}
 
 		if (memcmp(checkcode->vp_octets, eap_aka_session->checkcode, eap_aka_session->checkcode_len) == 0) {
-			RDEBUG2("EAP-AKA-Checkcode matches calculated checkcode");
+			RDEBUG2("Received checkcode matches calculated checkcode");
 		} else {
-			REDEBUG("EAP-AKA-Checkcode does not match calculated checkcode");
-			RHEXDUMP_INLINE2(checkcode->vp_octets, checkcode->vp_length, "Received");
-			RHEXDUMP_INLINE2(eap_aka_session->checkcode,
+			REDEBUG("Received checkcode does not match calculated checkcode");
+			RHEXDUMP_INLINE(L_DBG_LVL_2, checkcode->vp_octets, checkcode->vp_length, "Received");
+			RHEXDUMP_INLINE(L_DBG_LVL_2, eap_aka_session->checkcode,
 					eap_aka_session->checkcode_len, "Expected");
-			return -1;
+			return aka_failure_notification_enter(inst, request, eap_session);
 		}
 	/*
 	 *	Only print something if we calculated a checkcode
 	 */
 	} else if (eap_aka_session->checkcode_len > 0){
-		RDEBUG2("Peer didn't include EAP-AKA-Checkcode, skipping checkcode validation");
+		RDEBUG2("Peer didn't include AT_CHECKCODE, skipping checkcode validation");
 	}
 
-	vp = fr_pair_find_by_da(vps, attr_eap_aka_res, TAG_ANY);
+	/*
+	 *	Check to see if the supplicant sent
+	 *	AT_COUNTER_TOO_SMALL, if they did then we
+	 *	clear out reauth information and enter the
+	 *	challenge state.
+	 */
+	if (fr_pair_find_by_da(from_peer, attr_eap_aka_sim_counter_too_small, TAG_ANY)) {
+		RWDEBUG("Peer sent AT_COUNTER_TOO_SMALL (indicating our AT_COUNTER value (%u) wasn't fresh)",
+			eap_aka_session->keys.reauth.counter);
+
+		fr_aka_sim_vector_umts_reauth_clear(&eap_aka_session->keys);
+		eap_aka_session->allow_encrypted = false;
+
+	 	return aka_challenge_enter(inst, request, eap_session);
+	}
+
+	/*
+	 *	If the peer wants a Success notification, and
+	 *	we included AT_RESULT_IND then send a success
+	 *      notification, otherwise send a normal EAP-Success.
+	 *
+	 *	RFC 4187 Section 6.2. Result Indications
+	 */
+	if (eap_aka_session->send_result_ind) {
+		if (!fr_pair_find_by_da(from_peer, attr_eap_aka_sim_result_ind, TAG_ANY)) {
+			RDEBUG("We wanted to use protected result indications, but peer does not");
+			eap_aka_session->send_result_ind = false;
+		} else {
+			return aka_success_notification_enter(inst, request, eap_session);
+		}
+	} else if (fr_pair_find_by_da(from_peer, attr_eap_aka_sim_result_ind, TAG_ANY)) {
+		RDEBUG("Peer wanted to use protected result indications, but we do not");
+	}
+
+	eap_aka_session->reauthentication_success = true;
+
+	return aka_eap_success_enter(inst, request, eap_session);
+}
+
+/** Process an EAP-Response/Challenge message
+ *
+ * Verify that MAC, and RES match what we expect.
+ */
+static rlm_rcode_t aka_challenge_response_process(rlm_eap_aka_t *inst, REQUEST *request, eap_session_t *eap_session)
+{
+	eap_aka_session_t	*eap_aka_session = talloc_get_type_abort(eap_session->opaque, eap_aka_session_t);
+
+	uint8_t			calc_mac[AKA_SIM_MAC_DIGEST_SIZE];
+	ssize_t			slen;
+	VALUE_PAIR		*vp = NULL, *mac, *checkcode;
+	VALUE_PAIR		*from_peer = request->packet->vps;
+
+	mac = fr_pair_find_by_da(from_peer, attr_eap_aka_sim_mac, TAG_ANY);
+	if (!mac) {
+		REDEBUG("Missing AT_MAC attribute");
+		return aka_failure_notification_enter(inst, request, eap_session);
+	}
+	if (mac->vp_length != AKA_SIM_MAC_DIGEST_SIZE) {
+		REDEBUG("MAC has incorrect length, expected %u bytes got %zu bytes",
+			AKA_SIM_MAC_DIGEST_SIZE, mac->vp_length);
+		return aka_failure_notification_enter(inst, request, eap_session);
+	}
+
+	slen = fr_aka_sim_crypto_sign_packet(calc_mac, eap_session->this_round->response, true,
+					 eap_aka_session->mac_md,
+					 eap_aka_session->keys.k_aut, eap_aka_session->keys.k_aut_len,
+					 NULL, 0);
+	if (slen < 0) {
+		RPEDEBUG("Failed calculating MAC");
+		return aka_failure_notification_enter(inst, request, eap_session);
+	} else if (slen == 0) {
+		REDEBUG("Zero length AT_MAC attribute");
+		return aka_failure_notification_enter(inst, request, eap_session);
+	}
+
+	if (memcmp(mac->vp_octets, calc_mac, sizeof(calc_mac)) == 0) {
+		RDEBUG2("Received MAC matches calculated MAC");
+	} else {
+		REDEBUG("Received MAC does not match calculated MAC");
+		RHEXDUMP_INLINE2(mac->vp_octets, AKA_SIM_MAC_DIGEST_SIZE, "Received");
+		RHEXDUMP_INLINE2(calc_mac, AKA_SIM_MAC_DIGEST_SIZE, "Expected");
+		return aka_failure_notification_enter(inst, request, eap_session);
+	}
+
+	/*
+	 *	If the peer doesn't include a checkcode then that
+	 *	means they don't support it, and we can't validate
+	 *	their view of the identity packets.
+	 */
+	checkcode = fr_pair_find_by_da(from_peer, attr_eap_aka_sim_checkcode, TAG_ANY);
+	if (checkcode) {
+		if (checkcode->vp_length != eap_aka_session->checkcode_len) {
+			REDEBUG("Checkcode length (%zu) does not match calculated checkcode length (%zu)",
+				checkcode->vp_length, eap_aka_session->checkcode_len);
+			return aka_failure_notification_enter(inst, request, eap_session);
+		}
+
+		if (memcmp(checkcode->vp_octets, eap_aka_session->checkcode, eap_aka_session->checkcode_len) == 0) {
+			RDEBUG2("Received checkcode matches calculated checkcode");
+		} else {
+			REDEBUG("Received checkcode does not match calculated checkcode");
+			RHEXDUMP_INLINE2(checkcode->vp_octets, checkcode->vp_length, "Received");
+			RHEXDUMP_INLINE2(eap_aka_session->checkcode, eap_aka_session->checkcode_len, "Expected");
+			return aka_failure_notification_enter(inst, request, eap_session);
+		}
+	/*
+	 *	Only print something if we calculated a checkcode
+	 */
+	} else if (eap_aka_session->checkcode_len > 0){
+		RDEBUG2("Peer didn't include AT_CHECKCODE, skipping checkcode validation");
+	}
+
+	vp = fr_pair_find_by_da(from_peer, attr_eap_aka_sim_res, TAG_ANY);
 	if (!vp) {
-		REDEBUG("Missing EAP-AKA-RES from challenge response");
-		return -1;
+		REDEBUG("AT_RES missing from challenge response");
+		return aka_failure_notification_enter(inst, request, eap_session);
 	}
 
 	if (vp->vp_length != eap_aka_session->keys.umts.vector.xres_len) {
-		REDEBUG("EAP-AKA-RES length (%zu) does not match XRES length (%zu)",
+		REDEBUG("RES length (%zu) does not match XRES length (%zu)",
 			vp->vp_length, eap_aka_session->keys.umts.vector.xres_len);
-		return -1;
+		return aka_failure_notification_enter(inst, request, eap_session);
 	}
 
   	if (memcmp(vp->vp_octets, eap_aka_session->keys.umts.vector.xres, vp->vp_length)) {
-    		REDEBUG("EAP-AKA-RES from client does match XRES");
-		RHEXDUMP_INLINE2(vp->vp_octets, vp->vp_length, "RES  :");
-		RHEXDUMP_INLINE2(eap_aka_session->keys.umts.vector.xres,
+    		REDEBUG("RES from client does match XRES");
+		RHEXDUMP_INLINE(L_DBG_LVL_2, vp->vp_octets, vp->vp_length, "RES  :");
+		RHEXDUMP_INLINE(L_DBG_LVL_2, eap_aka_session->keys.umts.vector.xres,
 				eap_aka_session->keys.umts.vector.xres_len, "XRES :");
-		return -1;
+		return aka_failure_notification_enter(inst, request, eap_session);
 	}
 
-	RDEBUG2("EAP-AKA-RES matches XRES");
+	RDEBUG2("RES matches XRES");
 
 	eap_aka_session->challenge_success = true;
 
 	/*
-	 *	If the peer wants a Success notification, then
-	 *	send a success notification, otherwise send a
-	 *	normal EAP-Success.
+	 *	If the peer wants a Success notification, and
+	 *	we included AT_RESULT_IND then send a success
+	 *      notification, otherwise send a normal EAP-Success.
+	 *
+	 *	RFC 4187 Section 6.2. Result Indications
 	 */
-	if (fr_pair_find_by_da(vps, attr_eap_aka_result_ind, TAG_ANY)) {
-		eap_aka_state_enter(eap_session, EAP_AKA_SERVER_SUCCESS_NOTIFICATION);
-		return 1;
+	if (eap_aka_session->send_result_ind) {
+		if (!fr_pair_find_by_da(from_peer, attr_eap_aka_sim_result_ind, TAG_ANY)) {
+			RDEBUG("We wanted to use protected result indications, but peer does not");
+			eap_aka_session->send_result_ind = false;
+		} else {
+			return aka_success_notification_enter(inst, request, eap_session);
+		}
+	} else if (fr_pair_find_by_da(from_peer, attr_eap_aka_sim_result_ind, TAG_ANY)) {
+		RDEBUG("Peer wanted to use protected result indications, but we do not");
 	}
 
-	eap_aka_state_enter(eap_session, EAP_AKA_SERVER_SUCCESS);
-	return 0;
+	return aka_eap_success_enter(inst, request, eap_session);
 }
 
-/** Process the Peer's response and advantage the state machine
+/** Process an identity response
  *
+ * Handles identity negotiation
  */
-static rlm_rcode_t mod_process(UNUSED void *instance, UNUSED void *thread, REQUEST *request)
+static rlm_rcode_t aka_identity_response_process(rlm_eap_aka_t *inst,
+						 REQUEST *request, eap_session_t *eap_session)
 {
-	eap_session_t		*eap_session = eap_session_get(request);
 	eap_aka_session_t	*eap_aka_session = talloc_get_type_abort(eap_session->opaque, eap_aka_session_t);
-
-	fr_sim_decode_ctx_t	ctx = {
-					.keys = &eap_aka_session->keys,
-				};
-	VALUE_PAIR		*vp, *vps, *subtype_vp;
-	fr_cursor_t		cursor;
-
-	eap_aka_subtype_t	subtype;
-
-	int			ret;
+	VALUE_PAIR		*id;
+	bool			user_set_id_req;
+	VALUE_PAIR		*from_peer = request->packet->vps;
+	VALUE_PAIR		*identity_type;
 
 	/*
-	 *	RFC 4187 says we ignore the contents of the
-	 *	next packet after we send our success notification
-	 *	and always send a success.
+	 *	Digest the identity response
 	 */
-	if (eap_aka_session->state == EAP_AKA_SERVER_SUCCESS_NOTIFICATION) {
-		eap_aka_state_enter(eap_session, EAP_AKA_SERVER_SUCCESS);
-		return RLM_MODULE_HANDLED;
+	if (fr_aka_sim_crypto_update_checkcode(eap_aka_session->checkcode_state,
+					       eap_session->this_round->response) < 0) {
+		RPEDEBUG("Failed updating checkcode");
+		return aka_failure_notification_enter(inst, request, eap_session);
 	}
 
-	/* vps is the data from the client */
-	vps = request->packet->vps;
+	/*
+	 *	See if we got an AT_IDENTITY
+	 */
+	id = fr_pair_find_by_da(from_peer, attr_eap_aka_sim_identity, TAG_ANY);
+	if (!id) {
+		/*
+		 *  9.2.  EAP-Response/AKA-Identity
+		 *
+   		 *  The peer sends EAP-Response/AKA-Identity in response to a valid
+		 *  EAP-Request/AKA-Identity from the server.
+		 *  The peer MUST include the AT_IDENTITY attribute.  The usage of
+		 *  AT_IDENTITY is defined in Section 4.1.
+		 */
+		 REDEBUG("EAP-Response/AKA-Identity does not contain AT_IDENTITY");
+		return aka_failure_notification_enter(inst, request, eap_session);
+	}
+
+	/*
+	 *	Update cryptographic identity
+	 */
+	talloc_free(eap_aka_session->keys.identity);
+	eap_aka_session->keys.identity_len = id->vp_length;
+	MEM(eap_aka_session->keys.identity = talloc_memdup(eap_aka_session, id->vp_strvalue, id->vp_length));
+
+	/*
+	 *	See if the user wants us to request another
+	 *	identity.
+	 *
+	 *	If they set one themselves don't override
+	 *	what they set.
+	 */
+	user_set_id_req = id_req_set_by_user(request, eap_aka_session);
+	if ((request->rcode == RLM_MODULE_NOTFOUND) || user_set_id_req) {
+		if (!user_set_id_req) {
+			switch (eap_aka_session->last_id_req) {
+			case AKA_SIM_ANY_ID_REQ:
+				eap_aka_session->id_req = AKA_SIM_FULLAUTH_ID_REQ;
+				break;
+
+			case AKA_SIM_FULLAUTH_ID_REQ:
+				eap_aka_session->id_req = AKA_SIM_PERMANENT_ID_REQ;
+				break;
+
+			case AKA_SIM_NO_ID_REQ:	/* Should not happen */
+				rad_assert(0);
+				/* FALL-THROUGH */
+
+			case AKA_SIM_PERMANENT_ID_REQ:
+				REDEBUG("Peer sent no usable identities");
+				return aka_failure_notification_enter(inst, request, eap_session);
+
+			}
+			RDEBUG2("Previous section returned 'notfound', requesting next most permissive identity (%s)",
+				fr_int2str(fr_aka_sim_id_request_table, eap_aka_session->id_req, "<INVALID>"));
+		}
+		return aka_identity_enter(inst, request, eap_session);
+	}
+
+	/*
+	 *	If the identity looks like a fast re-auth id
+	 *	run fast re-auth, otherwise do fullauth.
+	 */
+	identity_type = fr_pair_find_by_da(from_peer, attr_eap_aka_sim_identity_type, TAG_ANY);
+	if (identity_type) switch (identity_type->vp_uint32) {
+	case FR_IDENTITY_TYPE_VALUE_FASTAUTH:
+		return aka_reauthentication_enter(inst, request, eap_session);
+
+	/*
+	 *	It's a pseudonym, which now needs resolving.
+	 *	The resume function here calls aka_challenge_enter
+	 *	if pseudonym resolution went ok.
+	 */
+	case FR_IDENTITY_TYPE_VALUE_PSEUDONYM:
+		return unlang_module_yield_to_section(request,
+						      inst->actions.load_pseudonym,
+						      RLM_MODULE_NOOP,
+						      pseudonym_load_resume,
+						      mod_signal,
+						      NULL);
+
+	/*
+	 *	If it's a permanent ID, copy it over to
+	 *	the session state list for use in the
+	 *      store pseudonym/store session sections
+	 *	later.
+	 */
+	case FR_IDENTITY_TYPE_VALUE_PERMANENT:
+	{
+		VALUE_PAIR *vp;
+
+		vp = fr_pair_find_by_da(request->packet->vps, attr_eap_identity, TAG_ANY);
+		if (vp) id_to_permanent_id(request, vp, eap_aka_session->type);
+	}
+		/* FALL-THROUGH */
+	default:
+		break;
+	}
+
+	return aka_challenge_enter(inst, request, eap_session);
+}
+
+/** Decode the peer's response
+ *
+ * This is called by the state_* functions to decode the peer's response.
+ */
+static rlm_rcode_t aka_decode(VALUE_PAIR **subtype_vp, VALUE_PAIR **vps, rlm_eap_aka_t *inst, REQUEST *request)
+{
+	eap_session_t		*eap_session = eap_session_get(request->parent);
+	eap_aka_session_t	*eap_aka_session = talloc_get_type_abort(eap_session->opaque, eap_aka_session_t);
+
+	fr_aka_sim_decode_ctx_t	ctx = {
+					.keys = &eap_aka_session->keys,
+				};
+	VALUE_PAIR		*aka_vps;
+	fr_cursor_t		cursor;
+
+	int			ret;
 
 	fr_cursor_init(&cursor, &request->packet->vps);
 	fr_cursor_tail(&cursor);
 
-	ret = fr_sim_decode(eap_session->request,
-			    &cursor,
-			    dict_eap_aka,
-			    eap_session->this_round->response->type.data,
-			    eap_session->this_round->response->type.length,
-			    &ctx);
+	ret = fr_aka_sim_decode(request,
+				&cursor,
+				dict_eap_aka_sim,
+				eap_session->this_round->response->type.data,
+				eap_session->this_round->response->type.length,
+				&ctx);
 	/*
 	 *	RFC 4187 says we *MUST* notify, not just
 	 *	send an EAP-Failure in this case where
@@ -930,224 +2398,557 @@ static rlm_rcode_t mod_process(UNUSED void *instance, UNUSED void *thread, REQUE
 	 */
 	if (ret < 0) {
 		RPEDEBUG2("Failed decoding EAP-AKA attributes");
-		eap_aka_state_enter(eap_session, EAP_AKA_SERVER_FAILURE_NOTIFICATION);
-		return RLM_MODULE_HANDLED;	/* We need to process more packets */
+		return aka_failure_notification_enter(inst, request, eap_session);
 	}
-
-	vp = fr_cursor_current(&cursor);
-	if (vp && RDEBUG_ENABLED2) {
+	/* vps is the data from the client */
+	aka_vps = fr_cursor_next(&cursor);
+	if (aka_vps && RDEBUG_ENABLED2) {
 		RDEBUG2("EAP-AKA decoded attributes");
-		log_request_pair_list(L_DBG_LVL_2, request, vp, NULL);
+		log_request_pair_list(L_DBG_LVL_2, request, aka_vps, NULL);
 	}
 
-	subtype_vp = fr_pair_find_by_da(vps, attr_eap_aka_subtype, TAG_ANY);
-	if (!subtype_vp) {
-		REDEBUG("Missing EAP-AKA-Subtype");
-		eap_aka_state_enter(eap_session, EAP_AKA_SERVER_FAILURE_NOTIFICATION);
-		return RLM_MODULE_HANDLED;				/* We need to process more packets */
+	*subtype_vp = fr_pair_find_by_da(aka_vps, attr_eap_aka_sim_subtype, TAG_ANY);
+	if (!*subtype_vp) {
+		REDEBUG("Missing AT_SUBTYPE");
+		return aka_failure_notification_enter(inst, request, eap_session);
 	}
-	subtype = subtype_vp->vp_uint16;
+	*vps = aka_vps;
 
-	switch (eap_aka_session->state) {
-	/*
-	 *	Here we expected the peer to send
-	 *	us identities for validation.
-	 */
-	case EAP_AKA_SERVER_IDENTITY:
-		switch (subtype) {
-		case EAP_AKA_IDENTITY:
-			if (process_eap_aka_identity(eap_session, vps) == 0) return RLM_MODULE_HANDLED;
-			eap_aka_state_enter(eap_session, EAP_AKA_SERVER_FAILURE_NOTIFICATION);
-			return RLM_MODULE_HANDLED;	/* We need to process more packets */
+	return RLM_MODULE_OK;
+}
 
-		/*
-		 *	Case 1 where we're allowed to send an EAP-Failure
-		 *
-		 *	This can happen in the case of a conservative
-		 *	peer, where it refuses to provide the permanent
-		 *	identity.
-		 */
-		case EAP_AKA_CLIENT_ERROR:
-		{
-			char buff[20];
+/** State machine exit point after sending EAP-Failure
+ *
+ */
+static rlm_rcode_t aka_eap_failure(UNUSED void *instance, UNUSED void *thread, UNUSED REQUEST *request)
+{
+	rad_assert(0);	/* Should never actually be called */
+	return RLM_MODULE_FAIL;
+}
 
-			vp = fr_pair_find_by_da(vps, attr_eap_aka_client_error_code, TAG_ANY);
-			if (!vp) {
-				REDEBUG("EAP-AKA Peer rejected AKA-Identity (%s) with client-error message but "
-					"has not supplied a client error code",
-					fr_int2str(sim_id_request_table, eap_aka_session->id_req, "<INVALID>"));
-			} else {
-				REDEBUG("Client rejected AKA-Identity (%s) with error: %s (%i)",
-					fr_int2str(sim_id_request_table, eap_aka_session->id_req, "<INVALID>"),
-					fr_pair_value_enum(vp, buff), vp->vp_uint16);
-			}
-			eap_aka_state_enter(eap_session, EAP_AKA_SERVER_FAILURE);
-			return RLM_MODULE_REJECT;
-		}
+/** Process EAP-Response/AKA-Notification (failure)
+ *
+ */
+static rlm_rcode_t aka_failure_notification_recv_resume(void *instance, UNUSED void *thread,
+						 	REQUEST *request, UNUSED void *rctx)
+{
+	rlm_eap_aka_t		*inst = talloc_get_type_abort(instance, rlm_eap_aka_t);
+	eap_session_t		*eap_session = eap_session_get(request->parent);
 
-		case EAP_AKA_NOTIFICATION:
-		notification:
-		{
-			char buff[20];
-
-			vp = fr_pair_afrom_da(vps, attr_eap_aka_notification);
-			if (!vp) {
-				REDEBUG2("Received AKA-Notification with no notification code");
-				eap_aka_state_enter(eap_session, EAP_AKA_SERVER_FAILURE_NOTIFICATION);
-				return RLM_MODULE_HANDLED;			/* We need to process more packets */
-			}
-
-			/*
-			 *	Case 3 where we're allowed to send an EAP-Failure
-			 */
-			if (!(vp->vp_uint16 & 0x8000)) {
-				REDEBUG2("AKA-Notification %s (%i) indicates failure", fr_pair_value_enum(vp, buff),
-					 vp->vp_uint16);
-				eap_aka_state_enter(eap_session, EAP_AKA_SERVER_FAILURE);
-				return RLM_MODULE_REJECT;
-			}
-
-			/*
-			 *	...if it's not a failure, then re-enter the
-			 *	current state.
-			 */
-			REDEBUG2("Got AKA-Notification %s (%i)", fr_pair_value_enum(vp, buff), vp->vp_uint16);
-			eap_aka_state_enter(eap_session, eap_aka_session->state);
-			return RLM_MODULE_HANDLED;
-		}
-
-		default:
-		unexpected_subtype:
-			/*
-			 *	RFC 4187 says we *MUST* notify, not just
-			 *	send an EAP-Failure in this case.
-			 */
-			REDEBUG("Unexpected subtype %pV", &subtype_vp->data);
-			eap_aka_state_enter(eap_session, EAP_AKA_SERVER_FAILURE_NOTIFICATION);
-			return RLM_MODULE_HANDLED;				/* We need to process more packets */
-		}
+	section_rcode_ignored(request);
 
 	/*
-	 *	Process the response to our previous challenge.
+	 *	Case 2 where we're allowed to send an EAP-Failure
 	 */
-	case EAP_AKA_SERVER_CHALLENGE:
-		switch (subtype) {
-		case EAP_AKA_CHALLENGE:
-			switch (process_eap_aka_challenge(eap_session, vps)) {
-			case 1:
-				return RLM_MODULE_HANDLED;
+	return aka_eap_failure_enter(inst, request, eap_session);
+}
 
-			case 0:
-				return RLM_MODULE_OK;
+/** Process the response to our EAP-Request/AKA-Notification (failure)
+ *
+ * We don't really care about the content as we're going to send an EAP-Failure anyway
+ */
+static rlm_rcode_t aka_failure_notification(void *instance, UNUSED void *thread, REQUEST *request)
+{
+	rlm_rcode_t		rcode;
+	rlm_eap_aka_t		*inst = talloc_get_type_abort(instance, rlm_eap_aka_t);
+	eap_session_t		*eap_session = eap_session_get(request->parent);
 
-			case -1:
-				eap_aka_state_enter(eap_session, EAP_AKA_SERVER_FAILURE_NOTIFICATION);
-				return RLM_MODULE_HANDLED;			/* We need to process more packets */
-			}
+	VALUE_PAIR		*subtype_vp = NULL;
+	VALUE_PAIR		*vps;
 
+	rcode = aka_decode(&subtype_vp, &vps, inst, request);
+	if (rcode != RLM_MODULE_OK) return rcode;
 
-		case EAP_AKA_SYNCHRONIZATION_FAILURE:
-			REDEBUG("EAP-AKA Peer synchronization failure");	/* We can't handle these yet */
-			eap_aka_state_enter(eap_session, EAP_AKA_SERVER_FAILURE_NOTIFICATION);
-			return RLM_MODULE_HANDLED;				/* We need to process more packets */
+#ifdef __clang_analyzer__
+	rad_assert(subtype_vp);
+#endif
+	switch (subtype_vp->vp_uint16) {
+	case FR_SUBTYPE_VALUE_NOTIFICATION:
+		RDEBUG2("AKA-Notification ACKed, sending EAP-Failure");
+		return unlang_module_yield_to_section(request,
+						      inst->actions.recv_failure_notification_ack,
+						      RLM_MODULE_NOOP,
+						      aka_failure_notification_recv_resume,
+						      mod_signal,
+						      NULL);
 
-		/*
-		 *	Case 1 where we're allowed to send an EAP-Failure
-		 */
-		case EAP_AKA_CLIENT_ERROR:
-		{
-			char buff[20];
-
-			vp = fr_pair_find_by_da(vps, attr_eap_aka_client_error_code, TAG_ANY);
-			if (!vp) {
-				REDEBUG("EAP-AKA Peer rejected AKA-Challenge with client-error message but "
-					"has not supplied a client error code");
-			} else {
-				REDEBUG("Client rejected AKA-Challenge with error: %s (%i)",
-					fr_pair_value_enum(vp, buff), vp->vp_uint16);
-			}
-			eap_aka_state_enter(eap_session, EAP_AKA_SERVER_FAILURE);
-			return RLM_MODULE_REJECT;
-		}
-
-		/*
-		 *	Case 2 where we're allowed to send an EAP-Failure
-		 */
-		case EAP_AKA_AUTHENTICATION_REJECT:
-			REDEBUG("EAP-AKA Peer Rejected AUTN");
-			eap_aka_state_enter(eap_session, EAP_AKA_SERVER_FAILURE);
-			return RLM_MODULE_REJECT;
-
-		case EAP_AKA_NOTIFICATION:
-			goto notification;
-
-		default:
-			goto unexpected_subtype;
-		}
-
-	/*
-	 *	Peer acked our failure
-	 */
-	case EAP_AKA_SERVER_FAILURE_NOTIFICATION:
-		switch (subtype) {
-		case EAP_AKA_NOTIFICATION:
-			RDEBUG2("AKA-Notification ACKed, sending EAP-Failure");
-			eap_aka_state_enter(eap_session, EAP_AKA_SERVER_FAILURE);
-			return RLM_MODULE_REJECT;
-
-		default:
-			goto unexpected_subtype;
-		}
-
-	/*
-	 *	Something bad happened...
-	 */
 	default:
-		rad_assert(0);
-		eap_aka_state_enter(eap_session, EAP_AKA_SERVER_FAILURE_NOTIFICATION);
-		return RLM_MODULE_HANDLED;				/* We need to process more packets */
+		RWDEBUG("AKA-Notification not ACKed correctly, sending EAP-Failure anyway");
+		return aka_eap_failure_enter(inst, request, eap_session);
 	}
 }
 
-/** Initiate the EAP-SIM session by starting the state machine
+/** State machine exit point after sending EAP-Success
  *
  */
-static rlm_rcode_t mod_session_init(void *instance, UNUSED void *thread, REQUEST *request)
+static rlm_rcode_t aka_eap_success(UNUSED void *instance, UNUSED void *thread, UNUSED REQUEST *request)
+{
+	rad_assert(0);	/* Should never actually be called */
+	return RLM_MODULE_FAIL;
+}
+
+/** Process EAP-Response/AKA-Notification (success)
+ *
+ */
+static rlm_rcode_t aka_success_notification_recv_resume(void *instance, UNUSED void *thread,
+							REQUEST *request, UNUSED void *rctx)
+{
+	rlm_eap_aka_t		*inst = talloc_get_type_abort(instance, rlm_eap_aka_t);
+	eap_session_t		*eap_session = eap_session_get(request->parent);
+
+	section_rcode_ignored(request);
+
+	/*
+	 *	RFC 4187 says we ignore the contents of the
+	 *	next packet after we send our success notification
+	 *	and always send a success.
+	 */
+	return aka_eap_success_enter(inst, request, eap_session);
+}
+
+/** Process the response to our EAP-Request/AKA-Notification (success)
+ *
+ * We don't actually care what the response is, we just need to
+ * create an EAP-Success, and write the MK to the outer request.
+ */
+static rlm_rcode_t aka_success_notification(void *instance, UNUSED void *thread, REQUEST *request)
+{
+	rlm_eap_aka_t		*inst = talloc_get_type_abort(instance, rlm_eap_aka_t);
+
+	return unlang_module_yield_to_section(request,
+					      inst->actions.recv_success_notification_ack,
+					      RLM_MODULE_NOOP,
+					      aka_success_notification_recv_resume,
+					      mod_signal,
+					      NULL);
+}
+
+/** Process EAP-Response/AKA-Challenge
+ *
+ */
+static rlm_rcode_t aka_challenge_response_recv_resume(void *instance, UNUSED void *thread,
+						      REQUEST *request, UNUSED void *rctx)
+{
+	rlm_eap_aka_t		*inst = talloc_get_type_abort(instance, rlm_eap_aka_t);
+	eap_session_t		*eap_session = eap_session_get(request->parent);
+
+	section_rcode_process(inst, request, eap_session);
+
+	return aka_challenge_response_process(inst, request, eap_session);
+}
+
+/** Process EAP-Response/AKA-Identity
+ *
+ */
+static rlm_rcode_t aka_identity_response_recv_resume(void *instance, UNUSED void *thread,
+						     REQUEST *request, UNUSED void *rctx)
+{
+	rlm_eap_aka_t		*inst = talloc_get_type_abort(instance, rlm_eap_aka_t);
+	eap_session_t		*eap_session = eap_session_get(request->parent);
+
+	section_rcode_process(inst, request, eap_session);
+
+	return aka_identity_response_process(inst, request, eap_session);
+}
+
+/** Process EAP-Response/AKA-Authentication-Reject
+ *
+ */
+static rlm_rcode_t aka_authentication_reject_recv_resume(void *instance, UNUSED void *thread,
+							 REQUEST *request, UNUSED void *rctx)
+{
+	rlm_eap_aka_t		*inst = talloc_get_type_abort(instance, rlm_eap_aka_t);
+	eap_session_t		*eap_session = eap_session_get(request->parent);
+
+	section_rcode_ignored(request);
+
+	/*
+	 *	Case 2 where we're allowed to send an EAP-Failure
+	 */
+	return aka_eap_failure_enter(inst, request, eap_session);
+}
+
+/** Process EAP-Response/AKA-Synchronization-Failure
+ *
+ */
+static rlm_rcode_t aka_synchronization_failure_recv_resume(void *instance, UNUSED void *thread,
+							   REQUEST *request, UNUSED void *rctx)
+{
+	rlm_eap_aka_t		*inst = talloc_get_type_abort(instance, rlm_eap_aka_t);
+	eap_session_t		*eap_session = eap_session_get(request->parent);
+	eap_aka_session_t	*eap_aka_session = talloc_get_type_abort(eap_session->opaque, eap_aka_session_t);
+	VALUE_PAIR		*vp;
+
+	section_rcode_process(inst, request, eap_session);
+
+	/*
+	 *	If there's no section to handle this, then no resynchronisation
+	 *	can't have occurred and we just send a reject.
+	 *
+	 *	Similarly, if we've already received one synchronisation failure
+	 *	then it's highly likely whatever user configured action was
+	 *	configured was unsuccessful, and we should just give up.
+	 */
+	if (!inst->actions.recv_syncronization_failure || eap_aka_session->prev_recv_sync_failure) {
+		return aka_failure_notification_enter(inst, request, eap_session);
+	}
+
+	/*
+	 *	We couldn't generate an SQN and the user didn't provide one,
+	 *	so we need to fail.
+	 */
+	vp = fr_pair_find_by_da(request->control, attr_sim_sqn, TAG_ANY);
+	if (!vp) {
+		REDEBUG("No &control:SQN value provided after resynchronisation, cannot continue");
+		return aka_failure_notification_enter(inst, request, eap_session);
+	}
+
+	/*
+	 *	RFC 4187 Section 6.3.1
+	 *
+	 *	"if the peer detects that the
+   	 *	sequence number in AUTN is not correct, the peer responds with
+	 *	EAP-Response/AKA-Synchronization-Failure (Section 9.6), and the
+	 *	server proceeds with a new EAP-Request/AKA-Challenge."
+	 */
+	return aka_challenge_enter(inst, request, eap_session);
+}
+
+/** Process EAP-Response/AKA-Client-Error
+ *
+ */
+static rlm_rcode_t aka_client_error_recv_resume(void *instance, UNUSED void *thread,
+						REQUEST *request, UNUSED void *rctx)
+{
+	rlm_eap_aka_t		*inst = talloc_get_type_abort(instance, rlm_eap_aka_t);
+	eap_session_t		*eap_session = eap_session_get(request->parent);
+
+	section_rcode_ignored(request);
+
+	return aka_eap_failure_enter(inst, request, eap_session);
+}
+
+static rlm_rcode_t aka_reauthentication_response_recv_resume(void *instance, UNUSED void *thread,
+							     REQUEST *request, UNUSED void *rctx)
+{
+	rlm_eap_aka_t		*inst = talloc_get_type_abort(instance, rlm_eap_aka_t);
+	eap_session_t		*eap_session = eap_session_get(request->parent);
+
+	section_rcode_process(inst, request, eap_session);
+
+	return aka_reauthentication_response_process(inst, request, eap_session);
+}
+
+static rlm_rcode_t aka_reauthentication(void *instance, UNUSED void *thread, REQUEST *request)
+{
+	rlm_rcode_t		rcode;
+	rlm_eap_aka_t		*inst = talloc_get_type_abort(instance, rlm_eap_aka_t);
+	eap_session_t		*eap_session = eap_session_get(request->parent);
+	eap_aka_session_t	*eap_aka_session = talloc_get_type_abort(eap_session->opaque, eap_aka_session_t);
+
+	VALUE_PAIR		*subtype_vp = NULL;
+	VALUE_PAIR		*vp;
+	VALUE_PAIR		*from_peer;
+
+	rcode = aka_decode(&subtype_vp, &from_peer, inst, request);
+	if (rcode != RLM_MODULE_OK) return rcode;
+
+#ifdef __clang_analyzer__
+	rad_assert(subtype_vp);
+#endif
+	/*
+	 *	These aren't allowed in Reauthentication responses:
+	 *
+	 *	EAP_AKA_AUTHENTICATION_REJECT	- We didn't provide an AUTN value
+	 *	EAP_AKA_SYNCHRONIZATION_FAILURE	- We didn't use new vectors.
+	 */
+	switch (subtype_vp->vp_uint16) {
+	case FR_SUBTYPE_VALUE_REAUTHENTICATION:
+		/*
+		 *	AT_COUNTER_TOO_SMALL is handled
+		 *      in aka_reauthentication_response_process.
+		 */
+		return unlang_module_yield_to_section(request,
+						      inst->actions.recv_reauthentication_response,
+						      RLM_MODULE_NOOP,
+						      aka_reauthentication_response_recv_resume,
+						      mod_signal,
+						      NULL);
+
+	/*
+	 *	Case 1 where we're allowed to send an EAP-Failure
+	 */
+	case FR_SUBTYPE_VALUE_CLIENT_ERROR:
+		REDEBUG("EAP-AKA Client error");
+
+		vp = fr_pair_find_by_da(from_peer, attr_eap_aka_sim_client_error_code, TAG_ANY);
+		if (!vp) {
+			REDEBUG("EAP-AKA Peer rejected %s with EAP-Response/AKA-Client-Error message but "
+				"has not supplied AT_ERROR_CODE",
+				module_state_method_to_str(aka_state_table, eap_session->process, "<unknown>"));
+		} else {
+			REDEBUG("Client rejected %s with error: %pV (%i)",
+				module_state_method_to_str(aka_state_table, eap_session->process, "<unknown>"),
+				&vp->data, vp->vp_uint16);
+		}
+
+		eap_aka_session->allow_encrypted = false;
+
+		return unlang_module_yield_to_section(request,
+						      inst->actions.recv_client_error,
+						      RLM_MODULE_NOOP,
+						      aka_client_error_recv_resume,
+						      mod_signal,
+						      NULL);
+
+	/*
+	 *	RFC 4187 says we *MUST* notify, not just
+	 *	send an EAP-Failure in this case.
+	 */
+	default:
+		REDEBUG("Unexpected subtype %pV", &subtype_vp->data);
+
+		eap_aka_session->allow_encrypted = false;
+
+		return aka_failure_notification_enter(inst, request, eap_session);
+	}
+}
+
+/** Process the response to our EAP-Request/AKA-Challenge
+ *
+ */
+static rlm_rcode_t aka_challenge(void *instance, UNUSED void *thread, REQUEST *request)
+{
+	rlm_rcode_t		rcode;
+	rlm_eap_aka_t		*inst = talloc_get_type_abort(instance, rlm_eap_aka_t);
+	eap_session_t		*eap_session = eap_session_get(request->parent);
+	eap_aka_session_t	*eap_aka_session = talloc_get_type_abort(eap_session->opaque, eap_aka_session_t);
+
+	VALUE_PAIR		*subtype_vp = NULL;
+	VALUE_PAIR		*vps;
+	VALUE_PAIR		*vp;
+
+	rcode = aka_decode(&subtype_vp, &vps, inst, request);
+	if (rcode != RLM_MODULE_OK) return rcode;
+
+#ifdef __clang_analyzer__
+	rad_assert(subtype_vp);
+#endif
+	switch (subtype_vp->vp_uint16) {
+	case FR_SUBTYPE_VALUE_AKA_CHALLENGE:
+		return unlang_module_yield_to_section(request,
+						      inst->actions.recv_challenge_response,
+						      RLM_MODULE_NOOP,
+						      aka_challenge_response_recv_resume,
+						      mod_signal,
+						      NULL);
+
+	/*
+	 *	Case 2 where we're allowed to send an EAP-Failure
+	 */
+	case FR_SUBTYPE_VALUE_AKA_AUTHENTICATION_REJECT:
+		REDEBUG("EAP-AKA Peer Rejected AUTN");
+
+		eap_aka_session->allow_encrypted = false;
+
+		return unlang_module_yield_to_section(request,
+						      inst->actions.recv_authentication_reject,
+						      RLM_MODULE_NOOP,
+						      aka_authentication_reject_recv_resume,
+						      mod_signal,
+						      NULL);
+
+	case FR_SUBTYPE_VALUE_AKA_SYNCHRONIZATION_FAILURE:
+	{
+		uint64_t	new_sqn;
+
+		REDEBUG("EAP-AKA Peer synchronization failure");
+
+		eap_aka_session->allow_encrypted = false;
+
+		vp = fr_pair_find_by_da(request->packet->vps, attr_eap_aka_sim_auts, TAG_ANY);
+		if (!vp) {
+			REDEBUG("EAP-Response/AKA-Synchronisation-Failure missing AT_AUTS");
+			return aka_failure_notification_enter(inst, request, eap_session);
+		}
+
+		switch (fr_aka_sim_umts_resync_from_attrs(&new_sqn,
+						      request, vp, &eap_aka_session->keys)) {
+		/*
+		 *	Add everything back that we'll need in the
+		 *	next challenge round.
+		 */
+		case 0:
+			MEM(pair_add_control(&vp, attr_sim_sqn) >= 0);
+			vp->vp_uint64 = new_sqn;
+
+			MEM(pair_add_control(&vp, attr_sim_ki) >= 0);
+			fr_pair_value_memcpy(vp, eap_aka_session->keys.auc.ki,
+					     sizeof(eap_aka_session->keys.auc.ki), false);
+
+			MEM(pair_add_control(&vp, attr_sim_opc) >= 0);
+			fr_pair_value_memcpy(vp, eap_aka_session->keys.auc.opc,
+					     sizeof(eap_aka_session->keys.auc.opc), false);
+			break;
+
+		case 1:	/* Don't have Ki or OPc so something else will need to deal with this */
+			break;
+
+		default:
+		case -1:
+			return aka_failure_notification_enter(inst, request, eap_session);
+		}
+
+		return unlang_module_yield_to_section(request,
+						      inst->actions.recv_syncronization_failure,
+						      RLM_MODULE_NOOP,
+						      aka_synchronization_failure_recv_resume,
+						      mod_signal,
+						      NULL);
+	}
+
+	/*
+	 *	Case 1 where we're allowed to send an EAP-Failure
+	 */
+	case FR_SUBTYPE_VALUE_CLIENT_ERROR:
+		REDEBUG("EAP-AKA Client error");
+
+		vp = fr_pair_find_by_da(request->packet->vps, attr_eap_aka_sim_client_error_code, TAG_ANY);
+		if (!vp) {
+			REDEBUG("EAP-AKA Peer rejected %s with EAP-Response/AKA-Client-Error message but "
+				"has not supplied AT_ERROR_CODE",
+				module_state_method_to_str(aka_state_table, eap_session->process, "<unknown>"));
+		} else {
+			REDEBUG("Client rejected %s with error: %pV (%i)",
+				module_state_method_to_str(aka_state_table, eap_session->process, "<unknown>"),
+				&vp->data, vp->vp_uint16);
+		}
+
+		eap_aka_session->allow_encrypted = false;
+
+		return unlang_module_yield_to_section(request,
+						      inst->actions.recv_client_error,
+						      RLM_MODULE_NOOP,
+						      aka_client_error_recv_resume,
+						      mod_signal,
+						      NULL);
+
+	/*
+	 *	RFC 4187 says we *MUST* notify, not just
+	 *	send an EAP-Failure in this case.
+	 */
+	default:
+		REDEBUG("Unexpected subtype %pV", &subtype_vp->data);
+
+		eap_aka_session->allow_encrypted = false;
+
+		return aka_failure_notification_enter(inst, request, eap_session);
+	}
+}
+
+/** Process to response to our EAP-Request/AKA-Identity message
+ *
+ * Usually this will be an EAP-Response/AKA-Identity containing AT_IDENTITY.
+ */
+static rlm_rcode_t aka_identity(void *instance, UNUSED void *thread, REQUEST *request)
+{
+	rlm_rcode_t		rcode;
+	rlm_eap_aka_t		*inst = talloc_get_type_abort(instance, rlm_eap_aka_t);
+	eap_session_t		*eap_session = eap_session_get(request->parent);
+
+	VALUE_PAIR		*subtype_vp = NULL;
+	VALUE_PAIR		*vps;
+
+	rcode = aka_decode(&subtype_vp, &vps, inst, request);
+	if (rcode != RLM_MODULE_OK) return rcode;
+
+#ifdef __clang_analyzer__
+	rad_assert(subtype_vp);
+#endif
+
+	switch (subtype_vp->vp_uint16) {
+	/*
+	 *	This is the subtype we expect
+	 */
+	case FR_SUBTYPE_VALUE_IDENTITY:
+	{
+		VALUE_PAIR	*id;
+
+		/*
+		 *	The supplicant could in theory not send
+		 *	and identity, and the user could configure
+		 *	one in policy.
+		 *
+		 *	This isn't supported by the standard, but
+		 *	who knows what arbitrary hacks vendors will
+		 *	require.
+		 */
+		id = fr_pair_find_by_da(request->packet->vps, attr_eap_aka_sim_identity, TAG_ANY);
+		if (id) {
+			/*
+			 *	Add ID hint attributes to the request to help
+			 *	the user make policy decisions.
+			 */
+			id_hint_pairs_add(request, id->vp_strvalue);
+		}
+
+		return unlang_module_yield_to_section(request,
+						      inst->actions.recv_identity_response,
+						      RLM_MODULE_NOOP,
+						      aka_identity_response_recv_resume,
+						      mod_signal,
+						      NULL);
+	}
+
+	/*
+	 *	Case 1 where we're allowed to send an EAP-Failure
+	 *
+	 *	This can happen in the case of a conservative
+	 *	peer, where it refuses to provide the permanent
+	 *	identity.
+	 */
+	case FR_SUBTYPE_VALUE_CLIENT_ERROR:
+		return unlang_module_yield_to_section(request,
+						      inst->actions.recv_client_error,
+						      RLM_MODULE_NOOP,
+						      aka_client_error_recv_resume,
+						      mod_signal,
+						      NULL);
+
+	default:
+		/*
+		 *	RFC 4187 says we *MUST* notify, not just
+		 *	send an EAP-Failure in this case.
+		 */
+		REDEBUG("Unexpected subtype %pV", &subtype_vp->data);
+		return aka_failure_notification_enter(inst, request, eap_session);
+	}
+}
+
+/** Give the user the opportunity to override defaults for requesting another identity, and the type of identity
+ *
+ */
+static rlm_rcode_t aka_eap_identity_resume(void *instance, UNUSED void *thread, REQUEST *request, UNUSED void *rctx)
 {
 	rlm_eap_aka_t			*inst = talloc_get_type_abort(instance, rlm_eap_aka_t);
-	eap_session_t			*eap_session = eap_session_get(request);
-	eap_aka_session_t		*eap_aka_session;
+	eap_session_t			*eap_session = eap_session_get(request->parent);
+	eap_aka_session_t		*eap_aka_session = talloc_get_type_abort(eap_session->opaque, eap_aka_session_t);
+	VALUE_PAIR			*eap_type;
+	VALUE_PAIR			*method;
+	VALUE_PAIR			*identity_type;
+	fr_aka_sim_method_hint_t	running, hinted;
 
-	fr_sim_id_type_t		type;
-	fr_sim_method_hint_t		method;
-
-	MEM(eap_aka_session = talloc_zero(eap_session, eap_aka_session_t));
-
-	eap_session->opaque = eap_aka_session;
-
-	/*
-	 *	Set default configuration, we may allow these
-	 *	to be toggled by attributes later.
-	 */
-	eap_aka_session->request_identity = inst->request_identity;
-	eap_aka_session->send_result_ind = inst->protected_success;
-	eap_aka_session->id_req = SIM_NO_ID_REQ;	/* Set the default */
+	section_rcode_process(inst, request, eap_session);
 
 	/*
-	 *	This value doesn't have be strong, but it is
-	 *	good if it is different now and then.
+	 *	Ignore attempts to change the EAP-Type
+	 *	This must be done before we enter
+	 *	the submodule.
 	 */
-	eap_aka_session->aka_id = (fr_rand() & 0xff);
+	eap_type = fr_pair_find_by_da(request->control, attr_eap_type, TAG_ANY);
+	if (eap_type) RWDEBUG("Ignoring &control:EAP-Type, this must be set *before* the EAP module is called");
 
-	/*
-	 *	Process the identity that we received in the
-	 *	EAP-Identity-Response and use it to determine
-	 *	the initial request we send to the Supplicant.
-	 */
-	if (fr_sim_id_type(&type, &method,
-			   eap_session->identity, talloc_array_length(eap_session->identity) - 1) < 0) {
-		RPWDEBUG2("Failed parsing identity, continuing anyway");
-	}
+	method = fr_pair_find_by_da(request->packet->vps, attr_eap_aka_sim_method_hint, TAG_ANY);
 
 	/*
 	 *	Unless AKA-Prime is explicitly disabled,
@@ -1158,98 +2959,206 @@ static rlm_rcode_t mod_session_init(void *instance, UNUSED void *thread, REQUEST
 	case FR_EAP_METHOD_AKA_PRIME:
 	default:
 		RDEBUG2("New EAP-AKA' session");
-		eap_aka_session->type = FR_EAP_METHOD_AKA_PRIME;
-		eap_aka_session->kdf = FR_EAP_AKA_KDF_VALUE_EAP_AKA_PRIME_WITH_CK_PRIME_IK_PRIME;
-		eap_aka_session->checkcode_md = eap_aka_session->mac_md = EVP_sha256();
-		eap_aka_session->keys.network = (uint8_t *)talloc_bstrndup(eap_aka_session, inst->network_name,
-									   talloc_array_length(inst->network_name) - 1);
-		eap_aka_session->keys.network_len = talloc_array_length(eap_aka_session->keys.network) - 1;
-		switch (method) {
-		default:
-			RWDEBUG("EAP-Identity-Response hints that EAP-%s should be started, but we're "
-				"attempting EAP-AKA'", fr_int2str(sim_id_method_hint_table, method, "<INVALID>"));
-			break;
 
-		case SIM_METHOD_HINT_AKA_PRIME:
-		case SIM_METHOD_HINT_UNKNOWN:
-			break;
-		}
+		running = AKA_SIM_METHOD_HINT_AKA_PRIME;
+
+		eap_aka_session->type = FR_EAP_METHOD_AKA_PRIME;
+		eap_aka_session->kdf = FR_KDF_VALUE_PRIME_WITH_CK_PRIME_IK_PRIME;
+		eap_aka_session->checkcode_md = eap_aka_session->mac_md = EVP_sha256();
 		break;
 
 	case FR_EAP_METHOD_AKA:
 		RDEBUG2("New EAP-AKA session");
-		eap_aka_session->type = FR_EAP_METHOD_AKA;
-		eap_aka_session->kdf = FR_EAP_AKA_KDF_VALUE_EAP_AKA;	/* Not actually sent */
-		eap_aka_session->checkcode_md = eap_aka_session->mac_md = EVP_sha1();
-		eap_aka_session->send_at_bidding = true;
-		switch (method) {
-		default:
-			RWDEBUG("EAP-Identity-Response hints that EAP-%s should be started, but we're "
-				"attempting EAP-AKA", fr_int2str(sim_id_method_hint_table, method, "<INVALID>"));
-			break;
 
-		case SIM_METHOD_HINT_AKA:
-		case SIM_METHOD_HINT_UNKNOWN:
-			break;
-		}
+		running = AKA_SIM_METHOD_HINT_AKA;
+
+		eap_aka_session->type = FR_EAP_METHOD_AKA;
+		eap_aka_session->kdf = FR_KDF_VALUE_EAP_AKA;	/* Not actually sent */
+		eap_aka_session->checkcode_md = eap_aka_session->mac_md = EVP_sha1();
+		eap_aka_session->send_at_bidding_prefer_prime = inst->send_at_bidding_prefer_prime;
 		break;
 	}
-	eap_session->process = mod_process;
 
 	/*
-	 *	Admin wants us to always request an identity
+	 *	Warn the user if the selected identity
+	 *	does not match what's hinted.
+	 */
+	if (method) {
+		switch (method->vp_uint32) {
+		case FR_METHOD_HINT_VALUE_AKA_PRIME:
+			hinted = AKA_SIM_METHOD_HINT_AKA_PRIME;
+			break;
+
+		case FR_METHOD_HINT_VALUE_AKA:
+			hinted = AKA_SIM_METHOD_HINT_AKA;
+			break;
+
+		case FR_METHOD_HINT_VALUE_SIM:
+			hinted = AKA_SIM_METHOD_HINT_SIM;
+			break;
+
+		default:
+			hinted = running;
+			break;
+		}
+
+		if (hinted != running) {
+			RWDEBUG("EAP-Identity hints that EAP-%s should be started, but we're attempting %s",
+				fr_int2str(fr_aka_sim_id_method_table, hinted, "<INVALID>"),
+				fr_int2str(fr_aka_sim_id_method_table, running, "<INVALID>"));
+		}
+	}
+
+	/*
+	 *	We always start by requesting any ID
+	 *	initially as we can always negotiate down.
+	 */
+	if (!id_req_set_by_user(request, eap_aka_session)) {
+		if (request->rcode == RLM_MODULE_NOTFOUND) {
+			eap_aka_session->id_req = AKA_SIM_ANY_ID_REQ;
+			RDEBUG2("Previous section returned 'notfound', requesting identity with %s",
+				fr_int2str(fr_aka_sim_id_request_table, eap_aka_session->id_req, "<INVALID>"));
+		} else if (inst->request_identity != AKA_SIM_NO_ID_REQ) {
+			eap_aka_session->id_req = inst->request_identity;
+			RDEBUG2("\"request_identity = %s\", requesting additional identity",
+				fr_int2str(fr_aka_sim_id_request_table, eap_aka_session->id_req, "<INVALID>"));
+		}
+	}
+
+	/*
+	 *	User may want us to always request an identity
 	 *	initially.  The RFC says this is also the
 	 *	better way to operate, as the supplicant
 	 *	can 'decorate' the identity in the identity
 	 *	response.
 	 */
-	if (inst->request_identity) {
-	request_id:
-		/*
-		 *	We always start by requesting
-		 *	any ID initially as we can
-		 *	always negotiate down.
-		 */
-		eap_aka_session->id_req = SIM_ANY_ID_REQ;
-		eap_aka_state_enter(eap_session, EAP_AKA_SERVER_IDENTITY);
-		return RLM_MODULE_HANDLED;
-	}
+	if (eap_aka_session->id_req != AKA_SIM_NO_ID_REQ) return aka_identity_enter(inst, request, eap_session);
+
 	/*
-	 *	Figure out what type of identity we have
-	 *	and use it to determine the initial
-	 *	request we send.
-	 */
-	switch (type) {
-	/*
-	 *	If there's no valid tag on the identity
-	 *	then it's probably been decorated by the
-	 *	supplicant.
+	 *	If we're not requesting the identity, then
+	 *	whatever we got in the EAP-Identity-Response
+	 *	is used to provide input to the KDF and
+	 *	we enter the challenge phase.
 	 *
-	 *	Request the unmolested identity
+	 *	We don't provide the user an opportunity to
+	 *	change this identity, as the RFCs are very
+	 *	explicit about it either being the value
+	 *	from AT_IDENTITY, OR the value from the
+	 *	EAP-Identity-Response.
 	 */
-	case SIM_ID_TYPE_UNKNOWN:
-		RWDEBUG("Identity format unknown, sending Identity request");
-		goto request_id;
+	eap_aka_session->keys.identity_len = talloc_array_length(eap_session->identity) - 1;
+	MEM(eap_aka_session->keys.identity = talloc_memdup(eap_aka_session, eap_session->identity,
+							   eap_aka_session->keys.identity_len));
 
 	/*
-	 *	These types need to be transformed into something
-	 *	usable before we can do anything.
+	 *	If the identity looks like a fast re-auth id
+	 *	run fast re-auth, otherwise do a fullauth.
 	 */
-	case SIM_ID_TYPE_PSEUDONYM:
-	case SIM_ID_TYPE_FASTAUTH:
+	identity_type = fr_pair_find_by_da(request->packet->vps, attr_eap_aka_sim_identity_type, TAG_ANY);
+	if (identity_type) switch (identity_type->vp_uint32) {
+	case FR_IDENTITY_TYPE_VALUE_FASTAUTH:
+		return aka_reauthentication_enter(inst, request, eap_session);
 
 	/*
-	 *	Permanent ID means we can just send the challenge
+	 *	It's a pseudonym, which now needs resolving.
+	 *	The resume function here calls aka_challenge_enter
+	 *	if pseudonym resolution went ok.
 	 */
-	case SIM_ID_TYPE_PERMANENT:
-		eap_aka_session->keys.identity_len = talloc_array_length(eap_session->identity) - 1;
-		MEM(eap_aka_session->keys.identity = talloc_memdup(eap_aka_session, eap_session->identity,
-								   eap_aka_session->keys.identity_len));
-		eap_aka_state_enter(eap_session, EAP_AKA_SERVER_CHALLENGE);
-		return RLM_MODULE_HANDLED;
+	case FR_IDENTITY_TYPE_VALUE_PSEUDONYM:
+		return unlang_module_yield_to_section(request,
+						      inst->actions.load_pseudonym,
+						      RLM_MODULE_NOOP,
+						      pseudonym_load_resume,
+						      mod_signal,
+						      NULL);
+
+	/*
+	 *	If it's a permanent ID, copy it over to
+	 *	the session state list for use in the
+	 *      store pseudonym/store session sections
+	 *	later.
+	 */
+	case FR_IDENTITY_TYPE_VALUE_PERMANENT:
+	{
+		VALUE_PAIR *vp;
+
+		vp = fr_pair_find_by_da(request->packet->vps, attr_eap_aka_sim_identity, TAG_ANY);
+		if (vp) id_to_permanent_id(request, vp, eap_aka_session->type);
+	}
+		/* FALL-THROUGH */
+
+	default:
+		break;
 	}
 
-	return RLM_MODULE_HANDLED;
+	return aka_challenge_enter(inst, request, eap_session);
+}
+
+/** Zero out the eap_aka_session when we free it to clear knowledge of secret keys
+ *
+ * @param[in] eap_aka_session	to free.
+ * @return 0
+ */
+static int _eap_aka_session_free(eap_aka_session_t *eap_aka_session)
+{
+	memset(eap_aka_session, 0, sizeof(*eap_aka_session));
+	return 0;
+}
+
+/** Initiate the EAP-SIM session by starting the eap_aka_state machine
+ *
+ */
+static rlm_rcode_t aka_eap_identity(void *instance, UNUSED void *thread, REQUEST *request)
+{
+	rlm_eap_aka_t		*inst = talloc_get_type_abort(instance, rlm_eap_aka_t);
+	eap_session_t		*eap_session = eap_session_get(request->parent);
+	eap_aka_session_t	*eap_aka_session;
+
+	MEM(eap_aka_session = talloc_zero(eap_session, eap_aka_session_t));
+	talloc_set_destructor(eap_aka_session, _eap_aka_session_free);
+
+	eap_session->opaque = eap_aka_session;
+
+	/*
+	 *	Set default configuration, we may allow these
+	 *	to be toggled by attributes later.
+	 */
+	eap_aka_session->send_result_ind = inst->protected_success;
+	eap_aka_session->id_req = AKA_SIM_NO_ID_REQ;	/* Set the default */
+
+	/*
+	 *	This value doesn't have be strong, but it is
+	 *	good if it is different now and then.
+	 */
+	eap_aka_session->aka_id = (fr_rand() & 0xff);
+
+	/*
+	 *	Add ID hint attributes to the request to help
+	 *	the user make policy decisions.
+	 */
+	if (eap_session->identity) {
+		VALUE_PAIR *vp;
+
+		id_hint_pairs_add(request, eap_session->identity);
+
+		/*
+		 *	Copy the EAP-Identity into an AKA-Identity
+		 *	attribute to make policies easier.
+		 */
+		MEM(pair_add_request(&vp, attr_eap_aka_sim_identity) >= 0);
+		fr_pair_value_bstrncpy(vp, eap_session->identity, talloc_array_length(eap_session->identity) - 1);
+	}
+
+	/*
+	 *	Running the same section as AKA-Identity-Response
+	 *	makes policies significantly easier.
+	 */
+	return unlang_module_yield_to_section(request,
+					      inst->actions.recv_identity_response,
+					      RLM_MODULE_NOOP,
+					      aka_eap_identity_resume,
+					      mod_signal,
+					      NULL);
 }
 
 #define ACTION_SECTION(_out, _field, _verb, _name) \
@@ -1281,17 +3190,6 @@ static int mod_section_compile(eap_aka_actions_t *actions, CONF_SECTION *server_
 	if (!fr_cond_assert(server_cs)) return -1;
 
 	/*
-	 *	Initial Identity-Response
-	 *
-	 *	We then either:
-	 *	- Request a new identity
-	 *	- Start full authentication
-	 *	- Start fast re-authentication
-	 *	- Fail...
-	 */
-	ACTION_SECTION(actions, recv_eap_identity_response, "recv", "EAP-Identity-Response");
-
-	/*
 	 *	Identity negotiation
 	 */
 	ACTION_SECTION(actions, send_identity_request, "send", "Identity-Request");
@@ -1306,8 +3204,8 @@ static int mod_section_compile(eap_aka_actions_t *actions, CONF_SECTION *server_
 	/*
 	 *	Fast-Re-Authentication
 	 */
-	ACTION_SECTION(actions, send_fast_reauth_request, "send", "Fast-Reauth-Request");
-	ACTION_SECTION(actions, recv_fast_reauth_response, "recv", "Fast-Reauth-Response");
+	ACTION_SECTION(actions, send_reauthentication_request, "send", "Reauthentication-Request");
+	ACTION_SECTION(actions, recv_reauthentication_response, "recv", "Reauthentication-Response");
 
 	/*
 	 *	Failures originating from the supplicant
@@ -1337,9 +3235,16 @@ static int mod_section_compile(eap_aka_actions_t *actions, CONF_SECTION *server_
 	/*
 	 *	Fast-Reauth vectors
 	 */
-	ACTION_SECTION(actions, load_session, "load", "session");
 	ACTION_SECTION(actions, store_session, "store", "session");
+	ACTION_SECTION(actions, load_session, "load", "session");
 	ACTION_SECTION(actions, clear_session, "clear", "session");
+
+	/*
+	 *	Pseudonym processing
+	 */
+	ACTION_SECTION(actions, store_pseudonym, "store", "pseudonym");
+	ACTION_SECTION(actions, load_pseudonym, "load", "pseudonym");
+	ACTION_SECTION(actions, clear_pseudonym, "clear", "pseudonym");
 
 	/*
 	 *	Warn if we couldn't find any actions.
@@ -1348,6 +3253,15 @@ static int mod_section_compile(eap_aka_actions_t *actions, CONF_SECTION *server_
 		cf_log_warn(server_cs, "No \"eap-aka\" actions found in virtual server \"%s\"",
 			    cf_section_name2(server_cs));
 	}
+
+	return 0;
+}
+
+static int mod_instantiate(void *instance, UNUSED CONF_SECTION *conf)
+{
+	rlm_eap_aka_t		*inst = talloc_get_type_abort(instance, rlm_eap_aka_t);
+
+	if (mod_section_compile(&inst->actions, inst->virtual_server) < 0) return -1;
 
 	return 0;
 }
@@ -1362,20 +3276,20 @@ static int mod_namespace_load(CONF_SECTION *server_cs)
 
 static int mod_load(void)
 {
-	if (virtual_server_namespace_register("eap-aka", mod_namespace_load) < 0) return -1;
+	if (virtual_namespace_register("eap-aka", "eap-aka-sim", "eap/aka-sim", mod_namespace_load) < 0) return -1;
 
-	if (fr_sim_init() < 0) return -1;
+	if (fr_aka_sim_init() < 0) return -1;
 
-	sim_xlat_register();
+	fr_aka_sim_xlat_register();
 
 	return 0;
 }
 
 static void mod_unload(void)
 {
-	sim_xlat_unregister();
+	fr_aka_sim_xlat_unregister();
 
-	fr_sim_free();
+	fr_aka_sim_free();
 }
 
 /*
@@ -1388,12 +3302,16 @@ rlm_eap_submodule_t rlm_eap_aka = {
 	.magic		= RLM_MODULE_INIT,
 
 	.provides	= { FR_EAP_METHOD_AKA, FR_EAP_METHOD_AKA_PRIME },
+
 	.inst_size	= sizeof(rlm_eap_aka_t),
 	.inst_type	= "rlm_eap_aka_t",
 	.config		= submodule_config,
 
 	.onload		= mod_load,
 	.unload		= mod_unload,
-	.session_init	= mod_session_init,	/* Initialise a new EAP session */
-	.entry_point	= mod_process,		/* Process next round of EAP method */
+
+	.instantiate	= mod_instantiate,
+
+	.session_init	= aka_eap_identity,	/* Initialise a new EAP session */
+	.namespace	= &dict_eap_aka_sim
 };

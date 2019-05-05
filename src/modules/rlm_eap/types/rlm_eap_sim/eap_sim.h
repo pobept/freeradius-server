@@ -26,7 +26,7 @@
  */
 RCSIDH(rlm_eap_sim_eap_sim_h, "$Id$")
 
-#include <freeradius-devel/sim/base.h>
+#include <freeradius-devel/eap_aka_sim/base.h>
 
 /** Server states
  *
@@ -50,8 +50,8 @@ typedef struct {
 	bool				challenge_success;	//!< Whether we received the correct
 								///< challenge response.
 
-	fr_sim_keys_t			keys;			//!< Various EAP-AKA keys.
-	fr_sim_id_req_type_t		id_req;			//!< The type of identity we're requesting
+	fr_aka_sim_keys_t			keys;			//!< Various EAP-AKA keys.
+	fr_aka_sim_id_req_type_t		id_req;			//!< The type of identity we're requesting
 								///< or previously requested.
 
 	bool				send_result_ind;	//!< Say that we would like to use protected result

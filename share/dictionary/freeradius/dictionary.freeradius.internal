@@ -69,8 +69,8 @@ ATTRIBUTE	EAP-Type				1018	integer
 ATTRIBUTE	EAP-TLS-Require-Client-Cert		1019	integer
 ATTRIBUTE	EAP-Id					1020	integer
 ATTRIBUTE	EAP-Code				1021	integer
-ATTRIBUTE	EAP-MD5-Password			1022	string
-ATTRIBUTE	PEAP-Version				1023	integer
+ATTRIBUTE	EAP-Identity				1022	string
+
 ATTRIBUTE	Client-Shortname			1024	string virtual
 ATTRIBUTE	Load-Balance-Key			1025	string
 ATTRIBUTE	Raw-Attribute				1026	octets
@@ -342,6 +342,9 @@ ATTRIBUTE	LDAP-Sync-Entry-DN			7	string
 ATTRIBUTE	LDAP-Sync-Entry-UUID			8	octets
 END-TLV		LDAP-Sync-TLV
 
+ATTRIBUTE	EAP-MD5-Password			1194	string
+ATTRIBUTE	PEAP-Version				1195	integer
+
 #
 #	Range:	1200-1210
 #
@@ -357,29 +360,12 @@ ATTRIBUTE	SIM-OPc					1202	octets[16]
 ATTRIBUTE	SIM-SQN					1203	integer64	# Only 48 bits, but we don't have one of those
 ATTRIBUTE	SIM-AMF					1204	octets[2]	# This is just a bit field not an integer
 
-# The IMSI number of a SIM.
-ATTRIBUTE	SIM-IMSI				1205	string
-
 # The algorithm the SIM card uses (Milenage for UMTS, COMP128 for others)
 ATTRIBUTE	SIM-Algo-Version			1206	integer
 VALUE	SIM-Algo-Version		Comp128v1		0
 VALUE	SIM-Algo-Version		Comp128v2		1
 VALUE	SIM-Algo-Version		Comp128v3		2
 VALUE	SIM-Algo-Version		Milenage		3
-
-ATTRIBUTE	SIM-Method-Hint				1207	integer
-
-VALUE	SIM-Method-Hint			Unknown			0
-VALUE	SIM-Method-Hint			SIM			1
-VALUE	SIM-Method-Hint			AKA			2
-VALUE	SIM-Method-Hint			AKA-Prime		3
-
-ATTRIBUTE	SIM-Identity-Type			1208	integer
-
-VALUE	SIM-Identity-Type		Unknown			0
-VALUE	SIM-Identity-Type		Permanent		1
-VALUE	SIM-Identity-Type		Pseudonym		2
-VALUE	SIM-Identity-Type		Fastauth		3
 
 #
 #	Range:	1230-1239
@@ -622,9 +608,9 @@ ATTRIBUTE	TLS-Session-Cert-File			1934	string
 
 # 1936 - 1939: reserved for future cert attributes
 
-# 1940 - 1949: reserved for TLS session caching
-ATTRIBUTE	TLS-Session-Id				1940	octets
-ATTRIBUTE	TLS-Session-Data			1942	octets
+# 1940 - 1949: reserved for session caching
+ATTRIBUTE	Session-Id				1940	octets
+ATTRIBUTE	Session-Data				1942	octets
 
 # Set and retrieved by EAP-TLS code
 ATTRIBUTE	TLS-OCSP-Cert-Valid			1943	integer
