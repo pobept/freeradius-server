@@ -28,10 +28,11 @@ RCSID("$Id$")
 
 #include <freeradius-devel/eap/base.h>
 #include <freeradius-devel/eap/types.h>
+#include <freeradius-devel/sim/milenage.h>
+#include <freeradius-devel/sim/comp128.h>
+
 #include "base.h"
 #include "attrs.h"
-#include "comp128.h"
-#include "milenage.h"
 
 #include <freeradius-devel/server/rad_assert.h>
 

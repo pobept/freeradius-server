@@ -36,13 +36,13 @@ RCSID("$Id$")
 #include <freeradius-devel/protocol/eap/aka-sim/dictionary.h>
 
 #include <freeradius-devel/eap/types.h>
-#include "base.h"
-#include "attrs.h"
-#include "milenage.h"
-
+#include <freeradius-devel/sim/milenage.h>
 #include <freeradius-devel/util/sha1.h>
 #include <freeradius-devel/tls/base.h>
 #include <openssl/evp.h>
+
+#include "base.h"
+#include "sim_attrs.h"
 
 
 /** Free OpenSSL memory associated with our checkcode ctx

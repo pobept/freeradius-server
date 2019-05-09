@@ -40,7 +40,6 @@ VALUE	Client-Error-Code	RANDS-Not-Fresh		3
 ATTRIBUTE	KDF-Input			23	string
 ATTRIBUTE	KDF				24	short
 
-VALUE	KDF			EAP-AKA			0
 VALUE	KDF			Prime-With-CK-Prime-IK-Prime 1
 
 #

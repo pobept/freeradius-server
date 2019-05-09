@@ -16,13 +16,13 @@
 
 /**
  * $Id$
- * @file rlm_eap_aka.c
- * @brief Implements EAP-AKA
+ * @file rlm_eap_aka_prime.c
+ * @brief Implements EAP-AKA'
  *
- * @author Arran Cudbard-Bell (a.cudbardb@freeradius.org)
+ * @author Arran Cudbard-Bell <a.cudbardb@freeradius.org>
  *
- * @copyright 2016 The FreeRADIUS server project
- * @copyright 2016 Network RADIUS SARL (sales@networkradius.com)
+ * @copyright 2019 The FreeRADIUS server project
+ * @copyright 2019 Network RADIUS SARL <sales@networkradius.com>
  */
 RCSID("$Id$")
 
@@ -35,11 +35,11 @@ static int virtual_server_parse(TALLOC_CTX *ctx, void *out, void *parent,
 				CONF_ITEM *ci, UNUSED CONF_PARSER const *rule);
 
 static CONF_PARSER submodule_config[] = {
+	{ FR_CONF_OFFSET("network_name", FR_TYPE_STRING, eap_aka_sim_state_conf_t, network_name ) },
 	{ FR_CONF_OFFSET("request_identity", FR_TYPE_BOOL, eap_aka_sim_state_conf_t, request_identity ),
 			 .func = cf_table_parse_uint32, .uctx = fr_aka_sim_id_request_table },
 	{ FR_CONF_OFFSET("ephemeral_id_length", FR_TYPE_UINT8, eap_aka_sim_state_conf_t, ephemeral_id_length ), .dflt = "14" },	/* 14 for compatibility */
 	{ FR_CONF_OFFSET("protected_success", FR_TYPE_BOOL, eap_aka_sim_state_conf_t, protected_success ), .dflt = "no" },
-	{ FR_CONF_OFFSET("prefer_aka_prime", FR_TYPE_BOOL, eap_aka_sim_state_conf_t, send_at_bidding_prefer_prime ), .dflt = "yes" },
 	{ FR_CONF_OFFSET("virtual_server", FR_TYPE_VOID, eap_aka_sim_state_conf_t, virtual_server), .func = virtual_server_parse },
 	CONF_PARSER_TERMINATOR
 };
@@ -157,7 +157,7 @@ static int mod_section_compile(eap_aka_sim_actions_t *actions, CONF_SECTION *ser
 	 *	Warn if we couldn't find any actions.
 	 */
 	if (!found) {
-		cf_log_warn(server_cs, "No \"eap-aka\" actions found in virtual server \"%s\"",
+		cf_log_warn(server_cs, "No \"eap-aka-prime\" actions found in virtual server \"%s\"",
 			    cf_section_name2(server_cs));
 	}
 
@@ -183,7 +183,7 @@ static int mod_namespace_load(CONF_SECTION *server_cs)
 
 static int mod_load(void)
 {
-	if (virtual_namespace_register("eap-aka", "eap-aka-sim", "eap/aka-sim", mod_namespace_load) < 0) return -1;
+	if (virtual_namespace_register("eap-aka-prime", "eap-aka-sim", "eap/aka-sim", mod_namespace_load) < 0) return -1;
 
 	if (fr_aka_sim_init() < 0) return -1;
 
@@ -203,12 +203,12 @@ static void mod_unload(void)
  *	The module name should be the only globally exported symbol.
  *	That is, everything else should be 'static'.
  */
-extern rlm_eap_submodule_t rlm_eap_aka;
-rlm_eap_submodule_t rlm_eap_aka = {
-	.name		= "eap_aka",
+extern rlm_eap_submodule_t rlm_eap_aka_prime;
+rlm_eap_submodule_t rlm_eap_aka_prime = {
+	.name		= "eap_aka_prime",
 	.magic		= RLM_MODULE_INIT,
 
-	.provides	= { FR_EAP_METHOD_AKA },
+	.provides	= { FR_EAP_METHOD_AKA_PRIME },
 
 	.inst_size	= sizeof(eap_aka_sim_state_conf_t),
 	.inst_type	= "eap_aka_sim_state_conf_t",

@@ -16,15 +16,15 @@
 
 /**
  * $Id$
- * @file rlm_eap_aka/eap_aka.h
+ * @file lib/eap_aka_sim/state_machine.h
  * @brief Declarations for EAP-AKA
  *
  * @author Arran Cudbard-Bell (a.cudbardb@freeradius.org)
  *
- * @copyright 2016 The FreeRADIUS server project
- * @copyright 2016 Network RADIUS SARL (sales@networkradius.com)
+ * @copyright 2016-2019 The FreeRADIUS server project
+ * @copyright 2016-2019 Network RADIUS SARL <sales@networkradius.com>
  */
-RCSIDH(rlm_eap_aka_eap_aka_h, "$Id$")
+RCSIDH(lib_eap_aka_sim_state_machine_h, "$Id$")
 
 #include <freeradius-devel/eap_aka_sim/base.h>
 
@@ -61,9 +61,9 @@ typedef struct {
 									///< from the supplicant.
 
 	CONF_SECTION			*send_failure_notification;	//!< Called when we're about to send a
-									///< EAP-AKA failure notification.
+									///< failure notification.
 	CONF_SECTION			*send_success_notification;	//!< Called when we're about to send a
-									///< EAP-AKA success notification.
+									///< success notification.
 	CONF_SECTION			*recv_failure_notification_ack;	//!< Called when the supplicant ACKs our
 									///< failure notification.
 	CONF_SECTION			*recv_success_notification_ack;	//!< Called when the supplicant ACKs our
@@ -79,7 +79,7 @@ typedef struct {
 	CONF_SECTION			*load_session;			//!< Load cached authentication vectors.
 	CONF_SECTION			*store_session;			//!< Store authentication vectors.
 	CONF_SECTION			*clear_session;			//!< Clear authentication vectors.
-} eap_aka_actions_t;
+} eap_aka_sim_actions_t;
 
 typedef struct {
 	eap_type_t			type;				//!< Either FR_TYPE_AKA, or FR_TYPE_AKA_PRIME.
@@ -132,8 +132,8 @@ typedef struct {
 									///< EVP_sha1() for EAP-AKA, EVP_sha256()
 									///< for EAP-AKA'.
 
-	int  				aka_id;				//!< Packet ID. (replay protection).
-} eap_aka_session_t;
+	int  				id;				//!< Packet ID. (replay protection).
+} eap_aka_sim_session_t;
 
 typedef struct {
 	char const			*network_name;			//!< Network ID as described by RFC 5448.
@@ -142,8 +142,15 @@ typedef struct {
 	size_t				ephemeral_id_length;		//!< The length of any identities we're
 									///< generating.
 	CONF_SECTION    		*virtual_server;		//!< Virtual server.
-	bool				protected_success;
-	bool				send_at_bidding_prefer_prime;
+	bool				protected_success;		//!< Send a success notification as well as
+									///< and EAP-Success packet.
+	bool				send_at_bidding_prefer_prime;	//!< Include the AT bidding attribute in
+									///< challenge requests.
 
-	eap_aka_actions_t		actions;			//!< Pre-compiled virtual server sections.
-} rlm_eap_aka_t;
+	eap_aka_sim_actions_t		actions;			//!< Pre-compiled virtual server sections.
+} eap_aka_sim_state_conf_t;
+
+/*
+ *	The main entry point
+ */
+rlm_rcode_t aka_sim_state_machine_start(void *instance, UNUSED void *thread, REQUEST *request);
