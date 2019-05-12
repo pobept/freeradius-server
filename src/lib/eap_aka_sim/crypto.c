@@ -408,7 +408,7 @@ ssize_t fr_aka_sim_crypto_sign_packet(uint8_t out[static AKA_SIM_MAC_DIGEST_SIZE
  *	- 0 on success.
  *	- -1 on failure.
  */
-int fr_aka_sim_crypto_kdf_0_gsm(fr_aka_sim_keys_t *keys)
+int fr_aka_sim_crypto_gsm_kdf_0(fr_aka_sim_keys_t *keys)
 {
 	fr_sha1_ctx	context;
 	uint8_t		fk[160];
@@ -509,7 +509,7 @@ int fr_aka_sim_crypto_kdf_0_gsm(fr_aka_sim_keys_t *keys)
  *	- 0 on success.
  *	- -1 on failure.
  */
-int fr_aka_sim_crypto_kdf_0_umts(fr_aka_sim_keys_t *keys)
+int fr_aka_sim_crypto_umts_kdf_0(fr_aka_sim_keys_t *keys)
 {
 	fr_sha1_ctx	context;
 	uint8_t		fk[160];
@@ -589,7 +589,7 @@ int fr_aka_sim_crypto_kdf_0_umts(fr_aka_sim_keys_t *keys)
  *	- 0 on success.
  *	- -1 on failure.
  */
-static int derive_ck_ik_prime(fr_aka_sim_keys_t *keys)
+static int ck_ik_prime_derive(fr_aka_sim_keys_t *keys)
 {
 	uint8_t		digest[sizeof(keys->ik_prime) + sizeof(keys->ck_prime)];
 	size_t		len;
@@ -790,7 +790,7 @@ static int aka_prime_prf(uint8_t *out, size_t outlen,
  *	- 0 on success.
  *	- -1 on failure.
  */
-int fr_aka_sim_crypto_kdf_1_umts(fr_aka_sim_keys_t *keys)
+int fr_aka_sim_crypto_umts_kdf_1(fr_aka_sim_keys_t *keys)
 {
 	uint8_t k[sizeof(keys->ck_prime) + sizeof(keys->ik_prime)];
 #define KDF_1_S_STATIC	"EAP-AKA'"
@@ -800,7 +800,7 @@ int fr_aka_sim_crypto_kdf_1_umts(fr_aka_sim_keys_t *keys)
 	uint8_t	mk[208];
 	size_t	s_len;
 
-	derive_ck_ik_prime(keys);
+	ck_ik_prime_derive(keys);
 
 	if (!fr_cond_assert(keys->vector_type == AKA_SIM_VECTOR_UMTS)) return -1;
 
@@ -889,8 +889,8 @@ void fr_aka_sim_crypto_keys_init_kdf_0_reauth(fr_aka_sim_keys_t *keys,
  * @param[in] k_re	from original authentication.
  * @param[in] counter	re-authentication counter.
  */
-void fr_aka_sim_crypto_keys_init_kdf_1_reauth(fr_aka_sim_keys_t *keys,
-					      uint8_t const k_re[static AKA_SIM_K_RE_SIZE], uint16_t counter)
+void fr_aka_sim_crypto_keys_init_umts_kdf_1_reauth(fr_aka_sim_keys_t *keys,
+						   uint8_t const k_re[static AKA_SIM_K_RE_SIZE], uint16_t counter)
 {
 	uint32_t nonce_s[4];
 
@@ -1072,7 +1072,7 @@ int fr_aka_sim_crypto_kdf_0_reauth(fr_aka_sim_keys_t *keys)
  *	- 0 on success.
  *	- -1 on failure.
  */
-int fr_aka_sim_crypto_kdf_1_reauth(fr_aka_sim_keys_t *keys)
+int fr_aka_sim_crypto_umts_kdf_1_reauth(fr_aka_sim_keys_t *keys)
 {
 #define KDF_1_S_REAUTH_STATIC	"EAP-AKA' re-auth"
 	uint8_t s[(sizeof(KDF_1_S_REAUTH_STATIC) - 1) + AKA_SIM_MAX_STRING_LENGTH + sizeof(uint16_t) + AKA_SIM_NONCE_S_SIZE];
@@ -1323,7 +1323,7 @@ static void test_eap_sim_kdf_0_gsm(void)
 
 	memcpy(&keys, &rfc4186_vector0_in, sizeof(keys));
 
-	ret = fr_aka_sim_crypto_kdf_0_gsm(&keys);
+	ret = fr_aka_sim_crypto_gsm_kdf_0(&keys);
 	TEST_CHECK(ret == 0);
 
 	TEST_CHECK(memcmp(&rfc4186_vector0_out.k_encr, keys.k_encr, sizeof(keys.k_encr)) == 0);
@@ -1397,7 +1397,7 @@ static void test_eap_aka_kdf_0_umts(void)
 
 	memcpy(&keys, &rfc4187_vector0_in, sizeof(keys));
 
-	ret = fr_aka_sim_crypto_kdf_0_umts(&keys);
+	ret = fr_aka_sim_crypto_umts_kdf_0(&keys);
 	TEST_CHECK(ret == 0);
 
 	TEST_CHECK(memcmp(&rfc4187_vector0_out.k_encr, keys.k_encr, sizeof(keys.k_encr)) == 0);
@@ -1551,7 +1551,7 @@ static void test_eap_aka_kdf_1_umts(void)
 	memcpy(keys.ck_prime, rfc5448_vector0_out.ck_prime, sizeof(keys.ck_prime));
 	memcpy(keys.ik_prime, rfc5448_vector0_out.ik_prime, sizeof(keys.ik_prime));
 
-	ret = fr_aka_sim_crypto_kdf_1_umts(&keys);
+	ret = fr_aka_sim_crypto_umts_kdf_1(&keys);
 	TEST_CHECK(ret == 0);
 
 	TEST_CHECK(memcmp(&rfc5448_vector0_out.k_encr, keys.k_encr, sizeof(keys.k_encr)) == 0);
@@ -1574,7 +1574,7 @@ static void test_eap_aka_derive_ck_ik(void)
 */
 
 	memcpy(&keys, &rfc5448_vector0_in, sizeof(keys));
-	ret = derive_ck_ik_prime(&keys);
+	ret = ck_ik_prime_derive(&keys);
 	TEST_CHECK(ret == 0);
 	TEST_CHECK(memcmp(&rfc5448_vector0_out.ck_prime, keys.ck_prime, sizeof(keys.ck_prime)) == 0);
 	TEST_CHECK(memcmp(&rfc5448_vector0_out.ik_prime, keys.ik_prime, sizeof(keys.ik_prime)) == 0);
@@ -1649,7 +1649,7 @@ static void test_eap_aka_kdf_1_reauth(void)
 
 	memcpy(&keys, &rfc5448_vector0_reauth_in, sizeof(keys));
 
-	ret = fr_aka_sim_crypto_kdf_1_reauth(&keys);
+	ret = fr_aka_sim_crypto_umts_kdf_1_reauth(&keys);
 	TEST_CHECK(ret == 0);
 
 	TEST_CHECK(memcmp(&rfc5448_vector0_reauth_out.k_encr, keys.k_encr, sizeof(keys.k_encr)) == 0);

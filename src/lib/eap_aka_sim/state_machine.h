@@ -108,6 +108,12 @@ typedef struct {
 	bool				allow_encrypted;		//!< Whether we can send encrypted
 									///< attributes at this phase of the attempt.
 
+	uint16_t			failure_type;			//!< One of the following values:
+									///< - FR_NOTIFICATION_VALUE_GENERAL_FAILURE_AFTER_AUTHENTICATION
+									///< - FR_NOTIFICATION_VALUE_TEMPORARILY_DENIED
+									///< - FR_NOTIFICATION_VALUE_NOT_SUBSCRIBED
+									///< - FR_NOTIFICATION_VALUE_GENERAL_FAILURE
+
 	/*
 	 *	Identity management
 	 */

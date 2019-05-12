@@ -734,7 +734,7 @@ int fr_aka_sim_vector_umts_from_attrs(REQUEST *request, VALUE_PAIR *vps,
  *	- 0 on success.
  *	- -1 on validation failure.
  */
-int fr_aka_sim_vector_umts_kdf_0_reauth_from_attrs(REQUEST *request, VALUE_PAIR *vps, fr_aka_sim_keys_t *keys)
+int fr_aka_sim_vector_gsm_umts_kdf_0_reauth_from_attrs(REQUEST *request, VALUE_PAIR *vps, fr_aka_sim_keys_t *keys)
 {
 	VALUE_PAIR *counter_vp;
 	VALUE_PAIR *mk_vp;
@@ -766,7 +766,7 @@ int fr_aka_sim_vector_umts_kdf_0_reauth_from_attrs(REQUEST *request, VALUE_PAIR 
 		return -1;
 	}
 
-	fr_aka_sim_crypto_keys_init_kdf_1_reauth(keys, mk_vp->vp_octets, counter_vp->vp_uint16);
+	fr_aka_sim_crypto_keys_init_kdf_0_reauth(keys, mk_vp->vp_octets, counter_vp->vp_uint16);
 
 	keys->vector_type = AKA_SIM_VECTOR_UMTS_REAUTH_KDF_0_REAUTH;	/* Didn't come from a vector */
 	keys->vector_src = AKA_SIM_VECTOR_SRC_REAUTH;
@@ -816,7 +816,7 @@ int fr_aka_sim_vector_umts_kdf_1_reauth_from_attrs(REQUEST *request, VALUE_PAIR 
 		return -1;
 	}
 
-	fr_aka_sim_crypto_keys_init_kdf_1_reauth(keys, k_re_vp->vp_octets, counter_vp->vp_uint16);
+	fr_aka_sim_crypto_keys_init_umts_kdf_1_reauth(keys, k_re_vp->vp_octets, counter_vp->vp_uint16);
 
 	keys->vector_type = AKA_SIM_VECTOR_UMTS_REAUTH_KDF_1_REAUTH;	/* Didn't come from a vector */
 	keys->vector_src = AKA_SIM_VECTOR_SRC_REAUTH;

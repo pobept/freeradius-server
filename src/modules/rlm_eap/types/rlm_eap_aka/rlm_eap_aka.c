@@ -117,7 +117,7 @@ static int mod_section_compile(eap_aka_sim_actions_t *actions, CONF_SECTION *ser
 	ACTION_SECTION(actions, recv_challenge_response, "recv", "Challenge-Response");
 
 	/*
-	 *	Fast-Re-Authentication
+	 *	Fast-Reauthentication
 	 */
 	ACTION_SECTION(actions, send_reauthentication_request, "send", "Reauthentication-Request");
 	ACTION_SECTION(actions, recv_reauthentication_response, "recv", "Reauthentication-Response");

@@ -285,23 +285,23 @@ ssize_t		fr_aka_sim_crypto_sign_packet(uint8_t out[static AKA_SIM_MAC_DIGEST_SIZ
 						  EVP_MD const *md, uint8_t const *key, size_t const key_len,
 						  uint8_t const *hmac_extra, size_t const hmac_extra_len);
 
-int		fr_aka_sim_crypto_kdf_0_gsm(fr_aka_sim_keys_t *keys);
+int		fr_aka_sim_crypto_gsm_kdf_0(fr_aka_sim_keys_t *keys);
 
-int		fr_aka_sim_crypto_kdf_0_umts(fr_aka_sim_keys_t *keys);
+int		fr_aka_sim_crypto_umts_kdf_0(fr_aka_sim_keys_t *keys);
 
-int		fr_aka_sim_crypto_kdf_1_umts(fr_aka_sim_keys_t *keys);
+int		fr_aka_sim_crypto_umts_kdf_1(fr_aka_sim_keys_t *keys);
 
 void		fr_aka_sim_crypto_keys_init_kdf_0_reauth(fr_aka_sim_keys_t *keys,
 							 uint8_t const mk[static AKA_SIM_MK_SIZE],
 							 uint16_t counter);
 
-void		fr_aka_sim_crypto_keys_init_kdf_1_reauth(fr_aka_sim_keys_t *keys,
-							 uint8_t const k_re[static AKA_SIM_K_RE_SIZE],
-							 uint16_t counter);
+void		fr_aka_sim_crypto_keys_init_umts_kdf_1_reauth(fr_aka_sim_keys_t *keys,
+							      uint8_t const k_re[static AKA_SIM_K_RE_SIZE],
+							      uint16_t counter);
 
 int		fr_aka_sim_crypto_kdf_0_reauth(fr_aka_sim_keys_t *keys);
 
-int		fr_aka_sim_crypto_kdf_1_reauth(fr_aka_sim_keys_t *keys);
+int		fr_aka_sim_crypto_umts_kdf_1_reauth(fr_aka_sim_keys_t *keys);
 
 void		fr_aka_sim_crypto_keys_log(REQUEST *request, fr_aka_sim_keys_t *keys);
 
@@ -317,7 +317,7 @@ int		fr_aka_sim_vector_umts_from_attrs(REQUEST *request, VALUE_PAIR *vps,
 						      fr_aka_sim_keys_t *keys,
 						      fr_aka_sim_vector_src_t *src);
 
-int		fr_aka_sim_vector_umts_kdf_0_reauth_from_attrs(REQUEST *request, VALUE_PAIR *vps,
+int		fr_aka_sim_vector_gsm_umts_kdf_0_reauth_from_attrs(REQUEST *request, VALUE_PAIR *vps,
 							       fr_aka_sim_keys_t *keys);
 
 int		fr_aka_sim_vector_umts_kdf_1_reauth_from_attrs(REQUEST *request, VALUE_PAIR *vps,
