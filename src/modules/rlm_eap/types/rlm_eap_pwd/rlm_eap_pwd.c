@@ -176,7 +176,6 @@ static rlm_rcode_t mod_process(void *instance, UNUSED void *thread, REQUEST *req
 	if (((eap_round = eap_session->this_round) == NULL) || !inst) return 0;
 
 	session = talloc_get_type_abort(eap_session->opaque, pwd_session_t);
-	request = eap_session->request;
 	response = eap_session->this_round->response;
 	hdr = (pwd_hdr *)response->type.data;
 

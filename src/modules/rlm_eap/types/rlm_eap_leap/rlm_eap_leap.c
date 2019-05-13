@@ -77,8 +77,8 @@ static rlm_rcode_t mod_process(UNUSED void *instance, UNUSED void *thread, REQUE
 	 *	The password is never sent over the wire.
 	 *	Always get the configured password, for each user.
 	 */
-	password = fr_pair_find_by_da(eap_session->request->control, attr_cleartext_password, TAG_ANY);
-	if (!password) password = fr_pair_find_by_da(eap_session->request->control, attr_nt_password, TAG_ANY);
+	password = fr_pair_find_by_da(request->control, attr_cleartext_password, TAG_ANY);
+	if (!password) password = fr_pair_find_by_da(request->control, attr_nt_password, TAG_ANY);
 	if (!password) {
 		REDEBUG("No Cleartext-Password or NT-Password configured for this user");
 		talloc_free(packet);
@@ -125,7 +125,7 @@ static rlm_rcode_t mod_process(UNUSED void *instance, UNUSED void *thread, REQUE
 
 	case 6:			/* Issue session key */
 		RDEBUG2("Stage 6");
-		reply = eap_leap_stage6(request, packet, eap_session->request->username, password, session);
+		reply = eap_leap_stage6(request, packet, request->username, password, session);
 		break;
 
 		/*
@@ -170,7 +170,7 @@ static rlm_rcode_t CC_HINT(nonnull) mod_session_init(UNUSED void *instance, UNUS
 	/*
 	 *	LEAP requires a User-Name attribute
 	 */
-	if (!eap_session->request->username) {
+	if (!request->username) {
 		REDEBUG("User-Name is required for EAP-LEAP authentication");
 		return RLM_MODULE_REJECT;
 	}

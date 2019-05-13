@@ -308,17 +308,17 @@ void		fr_aka_sim_crypto_keys_log(REQUEST *request, fr_aka_sim_keys_t *keys);
 /*
  *	vector.c
  */
-int		fr_aka_sim_vector_gsm_from_attrs(eap_session_t *eap_session, VALUE_PAIR *vps,
-					     	     int idx,
-					     	     fr_aka_sim_keys_t *keys,
-					     	     fr_aka_sim_vector_src_t *src);
+int		fr_aka_sim_vector_gsm_from_attrs(REQUEST *request, VALUE_PAIR *vps,
+						 int idx,
+						 fr_aka_sim_keys_t *keys,
+						 fr_aka_sim_vector_src_t *src);
 
 int		fr_aka_sim_vector_umts_from_attrs(REQUEST *request, VALUE_PAIR *vps,
-						      fr_aka_sim_keys_t *keys,
-						      fr_aka_sim_vector_src_t *src);
+						  fr_aka_sim_keys_t *keys,
+						  fr_aka_sim_vector_src_t *src);
 
 int		fr_aka_sim_vector_gsm_umts_kdf_0_reauth_from_attrs(REQUEST *request, VALUE_PAIR *vps,
-							       fr_aka_sim_keys_t *keys);
+								   fr_aka_sim_keys_t *keys);
 
 int		fr_aka_sim_vector_umts_kdf_1_reauth_from_attrs(REQUEST *request, VALUE_PAIR *vps,
 							       fr_aka_sim_keys_t *keys);
@@ -326,8 +326,8 @@ int		fr_aka_sim_vector_umts_kdf_1_reauth_from_attrs(REQUEST *request, VALUE_PAIR
 void		fr_aka_sim_vector_umts_reauth_clear(fr_aka_sim_keys_t *keys);
 
 int		fr_aka_sim_umts_resync_from_attrs(uint64_t *new_sqn,
-						      REQUEST *request, VALUE_PAIR *auts_vp,
-						      fr_aka_sim_keys_t *keys);
+						  REQUEST *request, VALUE_PAIR *auts_vp,
+						  fr_aka_sim_keys_t *keys);
 
 /*
  *	fips186prf.c

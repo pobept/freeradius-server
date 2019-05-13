@@ -54,12 +54,7 @@ static rlm_rcode_t mod_process(UNUSED void *instance, UNUSED void *thread, REQUE
 	MD5_PACKET	*reply;
 	VALUE_PAIR	*password;
 
-	/*
-	 *	Get the Cleartext-Password for this user.
-	 */
-	rad_assert(eap_session->request != NULL);
-
-	password = fr_pair_find_by_da(eap_session->request->control, attr_cleartext_password, TAG_ANY);
+	password = fr_pair_find_by_da(request->control, attr_cleartext_password, TAG_ANY);
 	if (!password) {
 		REDEBUG2("Cleartext-Password is required for EAP-MD5 authentication");
 		return RLM_MODULE_REJECT;

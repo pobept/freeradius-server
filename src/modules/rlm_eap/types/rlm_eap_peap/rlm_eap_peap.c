@@ -146,7 +146,7 @@ static rlm_rcode_t mod_process(void *instance, UNUSED void *thread, REQUEST *req
 		peap = tls_session->opaque = peap_alloc(tls_session, inst);
 	}
 
-	status = eap_tls_process(eap_session);
+	status = eap_tls_process(request, eap_session);
 	if ((status == EAP_TLS_INVALID) || (status == EAP_TLS_FAIL)) {
 		REDEBUG("[eap-tls process] = %s", fr_int2str(eap_tls_status_table, status, "<INVALID>"));
 	} else {
@@ -207,14 +207,14 @@ static rlm_rcode_t mod_process(void *instance, UNUSED void *thread, REQUEST *req
 	/*
 	 *	Process the PEAP portion of the request.
 	 */
-	rcode = eap_peap_process(eap_session, tls_session);
+	rcode = eap_peap_process(request, eap_session, tls_session);
 	switch (rcode) {
 	case RLM_MODULE_REJECT:
-		eap_tls_fail(eap_session);
+		eap_tls_fail(request, eap_session);
 		break;
 
 	case RLM_MODULE_HANDLED:
-		eap_tls_request(eap_session);
+		eap_tls_request(request, eap_session);
 		break;
 
 	case RLM_MODULE_OK:
@@ -224,7 +224,7 @@ static rlm_rcode_t mod_process(void *instance, UNUSED void *thread, REQUEST *req
 		/*
 		 *	Success: Automatically return MPPE keys.
 		 */
-		if (eap_tls_success(eap_session,
+		if (eap_tls_success(request, eap_session,
 				    keying_prf_label, sizeof(keying_prf_label) - 1,
 				    NULL, 0) < 0) return 0;
 	}
@@ -237,13 +237,10 @@ static rlm_rcode_t mod_process(void *instance, UNUSED void *thread, REQUEST *req
 		 *	will proxy it, rather than returning an EAP packet.
 		 */
 	case RLM_MODULE_UPDATED:
-#ifdef WITH_PROXY
-		rad_assert(eap_session->request->proxy != NULL);
-#endif
 		break;
 
 	default:
-		eap_tls_fail(eap_session);
+		eap_tls_fail(request, eap_session);
 		break;
 	}
 
@@ -268,14 +265,14 @@ static rlm_rcode_t mod_session_init(void *instance, UNUSED void *thread, REQUEST
 	 *	EAP-TLS-Require-Client-Cert attribute will override
 	 *	the require_client_cert configuration option.
 	 */
-	vp = fr_pair_find_by_da(eap_session->request->control, attr_eap_tls_require_client_cert, TAG_ANY);
+	vp = fr_pair_find_by_da(request->control, attr_eap_tls_require_client_cert, TAG_ANY);
 	if (vp) {
 		client_cert = vp->vp_uint32 ? true : false;
 	} else {
 		client_cert = inst->req_client_cert;
 	}
 
-	eap_session->opaque = eap_tls_session = eap_tls_session_init(eap_session, inst->tls_conf, client_cert);
+	eap_session->opaque = eap_tls_session = eap_tls_session_init(request, eap_session, inst->tls_conf, client_cert);
 	if (!eap_tls_session) return RLM_MODULE_FAIL;
 
 	/*
@@ -300,7 +297,7 @@ static rlm_rcode_t mod_session_init(void *instance, UNUSED void *thread, REQUEST
 	 *	TLS session initialization is over.  Now handle TLS
 	 *	related handshaking or application data.
 	 */
-	if (eap_tls_start(eap_session) < 0) {
+	if (eap_tls_start(request, eap_session) < 0) {
 		talloc_free(eap_tls_session);
 		return RLM_MODULE_FAIL;
 	}

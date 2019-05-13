@@ -1472,11 +1472,11 @@ static rlm_rcode_t sim_challenge_request_compose(eap_aka_sim_state_conf_t *inst,
 	fr_aka_sim_vector_src_t	src = AKA_SIM_VECTOR_SRC_AUTO;
 
 	RDEBUG2("Acquiring GSM vector(s)");
-	if ((fr_aka_sim_vector_gsm_from_attrs(eap_session, request->control, 0,
+	if ((fr_aka_sim_vector_gsm_from_attrs(request, request->control, 0,
 					      &eap_aka_sim_session->keys, &src) != 0) ||
-	    (fr_aka_sim_vector_gsm_from_attrs(eap_session, request->control, 1,
+	    (fr_aka_sim_vector_gsm_from_attrs(request, request->control, 1,
 	    				      &eap_aka_sim_session->keys, &src) != 0) ||
-	    (fr_aka_sim_vector_gsm_from_attrs(eap_session, request->control, 2,
+	    (fr_aka_sim_vector_gsm_from_attrs(request, request->control, 2,
 	    				      &eap_aka_sim_session->keys, &src) != 0)) {
 	    	REDEBUG("Failed retrieving SIM vectors");
 		return RLM_MODULE_FAIL;
