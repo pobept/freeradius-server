@@ -35,7 +35,7 @@ RCSID("$Id$")
 
 #include "base.h"
 #include "state_machine.h"
-#include "sim_attrs.h"
+#include "attrs.h"
 
 /** A state transition function
  *

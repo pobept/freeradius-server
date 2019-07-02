@@ -42,7 +42,7 @@ RCSID("$Id$")
 #include <openssl/evp.h>
 
 #include "base.h"
-#include "sim_attrs.h"
+#include "attrs.h"
 
 
 /** Free OpenSSL memory associated with our checkcode ctx

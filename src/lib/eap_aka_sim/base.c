@@ -35,7 +35,7 @@ RCSID("$Id$")
 
 #include <freeradius-devel/eap/types.h>
 #include "base.h"
-#include "sim_attrs.h"
+#include "attrs.h"
 
 static int instance_count = 0;
 
