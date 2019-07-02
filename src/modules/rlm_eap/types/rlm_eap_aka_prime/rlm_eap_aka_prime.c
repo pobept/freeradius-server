@@ -103,6 +103,14 @@ static int mod_section_compile(eap_aka_sim_actions_t *actions, CONF_SECTION *ser
 	ACTION_SECTION(actions, recv_identity_response, "recv", "Identity-Response");
 
 	/*
+	 *	Optional override sections if the user *really*
+	 *	wants to apply special policies for subsequent
+	 *	request/response rounds.
+	 */
+	ACTION_SECTION(actions, aka.send_aka_identity_request, "send", "AKA-Identity-Request");
+	ACTION_SECTION(actions, aka.recv_aka_identity_response, "recv", "AKA-Identity-Response");
+
+	/*
 	 *	Full-Authentication
 	 */
 	ACTION_SECTION(actions, send_challenge_request, "send", "Challenge-Request");
@@ -118,8 +126,8 @@ static int mod_section_compile(eap_aka_sim_actions_t *actions, CONF_SECTION *ser
 	 *	Failures originating from the supplicant
 	 */
 	ACTION_SECTION(actions, recv_client_error, "recv", "Client-Error");
-	ACTION_SECTION(actions, recv_authentication_reject, "recv", "Authentication-Reject");
-	ACTION_SECTION(actions, recv_syncronization_failure, "recv", "Syncronization-Failure");
+	ACTION_SECTION(actions, aka.recv_authentication_reject, "recv", "Authentication-Reject");
+	ACTION_SECTION(actions, aka.recv_syncronization_failure, "recv", "Syncronization-Failure");
 
 	/*
 	 *	Failure originating from the server

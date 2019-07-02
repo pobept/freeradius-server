@@ -78,7 +78,7 @@ eap {
 	type = peap
 #	type = fast
 #	type = aka
-	type = sim
+#	type = sim
 
 	#
 	#  ### EAP-MD5

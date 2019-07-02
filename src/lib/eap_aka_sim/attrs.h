@@ -68,6 +68,7 @@ extern fr_dict_attr_t const *attr_eap_aka_sim_res;
 extern fr_dict_attr_t const *attr_eap_aka_sim_result_ind;
 extern fr_dict_attr_t const *attr_eap_aka_sim_sres;
 extern fr_dict_attr_t const *attr_eap_aka_sim_subtype;
+extern fr_dict_attr_t const *attr_eap_aka_sim_selected_version;
 extern fr_dict_attr_t const *attr_eap_aka_sim_version_list;
 extern fr_dict_attr_t const *attr_eap_aka_sim_xres;
 

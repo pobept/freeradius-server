@@ -121,12 +121,25 @@ static rlm_rcode_t mod_authorize(void *instance, UNUSED void *thread, REQUEST *r
 static int submodule_parse(UNUSED TALLOC_CTX *ctx, void *out, UNUSED void *parent,
 			   CONF_ITEM *ci, UNUSED CONF_PARSER const *rule)
 {	char const	*name = cf_pair_value(cf_item_to_pair(ci));
+	char		*our_name = NULL;
+	char		*p;
 	CONF_SECTION	*eap_cs = cf_item_to_section(cf_parent(ci));
 	CONF_SECTION	*submodule_cs;
 	eap_type_t	method;
 
-	method = eap_name2type(name);
+	/*
+	 *	Search with underscores smashed to hyphens
+	 *	as that's what's used in the dictionary.
+	 */
+	p = our_name = talloc_strdup(NULL, name);
+	while (*p) {
+		if (*p == '_') *p = '-';
+		p++;
+	}
+
+	method = eap_name2type(our_name);
 	if (method == FR_EAP_METHOD_INVALID) {
+		talloc_free(our_name);
 		cf_log_err(ci, "Unknown EAP type %s", name);
 		return -1;
 	}
@@ -149,6 +162,7 @@ static int submodule_parse(UNUSED TALLOC_CTX *ctx, void *out, UNUSED void *paren
 	case FR_EAP_METHOD_TTLS:
 	case FR_EAP_METHOD_PEAP:
 	case FR_EAP_METHOD_PWD:
+	case FR_EAP_METHOD_AKA_PRIME:
 	case FR_EAP_METHOD_AKA:
 	case FR_EAP_METHOD_SIM:
 	{
@@ -177,6 +191,8 @@ static int submodule_parse(UNUSED TALLOC_CTX *ctx, void *out, UNUSED void *paren
 	}
 
 	*(void **)out = submodule_cs;
+
+	talloc_free(our_name);
 
 	return 0;
 }

@@ -1,0 +1,6 @@
+type = aka_prime
+
+aka_prime {
+	network_name = "testing123"
+	virtual_server = "eap-aka"
+}

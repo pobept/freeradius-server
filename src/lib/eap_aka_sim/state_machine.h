@@ -32,53 +32,69 @@ RCSIDH(lib_eap_aka_sim_state_machine_h, "$Id$")
  *
  */
 typedef struct {
-	CONF_SECTION			*send_identity_request;		//!< Called when we're about to request a
+	union {
+		struct {
+			CONF_SECTION	*send_aka_identity_request;	//!< Called when we're about to request a
 									///< different identity.
-	CONF_SECTION			*recv_identity_response;	//!< Called when we receive a new identity.
+			CONF_SECTION	*recv_aka_identity_response;	//!< Called when we receive a new identity.
 
-	CONF_SECTION			*send_challenge_request;	//!< Called when we're about to send a
-									///< a challenge.
-	CONF_SECTION			*recv_challenge_response;	//!< Called when we receive a response
-									///< to a previous challenge.
-
-	CONF_SECTION			*send_fast_reauth_request;	//!< Called when we're about to send a
-									///< Fast-Reauth-Request.
-	CONF_SECTION			*recv_fast_reauth_response;	//!< Called when we receive a response
-									///< to a previous Fast-Reauth-Request.
-
-	CONF_SECTION			*recv_client_error;		//!< Called if the supplicant experiences
-									///< an error of some kind.
-	CONF_SECTION			*recv_authentication_reject;	//!< Called if the supplicant rejects the
+			CONF_SECTION	*recv_authentication_reject;	//!< Called if the supplicant rejects the
 									///< authentication attempt.
-	CONF_SECTION			*recv_syncronization_failure;	//!< Called if the supplicant determines
+			CONF_SECTION	*recv_syncronization_failure;	//!< Called if the supplicant determines
 									///< the AUTN value is invalid.
 									///< Usually used for resyncing with the HLR.
+		} aka;
 
-	CONF_SECTION			*send_reauthentication_request;	//!< Challenge the supplicant with an MK
-									///< from an existing session.
+		struct {
+			CONF_SECTION	*send_sim_start_request;	//!< Called when we're about to request a
+									///< different identity.
+			CONF_SECTION	*recv_sim_start_response;	//!< Called when we receive a new identity.
 
-	CONF_SECTION			*recv_reauthentication_response; //!< Process the reauthentication response
-									///< from the supplicant.
+		} sim;
+	};
 
-	CONF_SECTION			*send_failure_notification;	//!< Called when we're about to send a
-									///< failure notification.
-	CONF_SECTION			*send_success_notification;	//!< Called when we're about to send a
-									///< success notification.
-	CONF_SECTION			*recv_failure_notification_ack;	//!< Called when the supplicant ACKs our
-									///< failure notification.
-	CONF_SECTION			*recv_success_notification_ack;	//!< Called when the supplicant ACKs our
-									///< success notification.
+	CONF_SECTION	*send_identity_request;		//!< Called when we're about to request a
+							///< different identity.
+	CONF_SECTION	*recv_identity_response;	//!< Called when we receive a new identity.
 
-	CONF_SECTION			*send_eap_success;		//!< Called when we send an EAP-Success message.
-	CONF_SECTION			*send_eap_failure;		//!< Called when we send an EAP-Failure message.
+	CONF_SECTION	*send_challenge_request;	//!< Called when we're about to send a
+							///< a challenge.
+	CONF_SECTION	*recv_challenge_response;	//!< Called when we receive a response
+							///< to a previous challenge.
 
-	CONF_SECTION			*load_pseudonym;		//!< Resolve a pseudonym to a permanent ID.
-	CONF_SECTION			*store_pseudonym;		//!< Store a permanent ID to pseudonym mapping.
-	CONF_SECTION			*clear_pseudonym;		//!< Clear pseudonym to permanent ID mapping.
+	CONF_SECTION	*send_fast_reauth_request;	//!< Called when we're about to send a
+							///< Fast-Reauth-Request.
+	CONF_SECTION	*recv_fast_reauth_response;	//!< Called when we receive a response
+							///< to a previous Fast-Reauth-Request.
 
-	CONF_SECTION			*load_session;			//!< Load cached authentication vectors.
-	CONF_SECTION			*store_session;			//!< Store authentication vectors.
-	CONF_SECTION			*clear_session;			//!< Clear authentication vectors.
+	CONF_SECTION	*recv_client_error;		//!< Called if the supplicant experiences
+							///< an error of some kind.
+
+	CONF_SECTION	*send_reauthentication_request;	//!< Challenge the supplicant with an MK
+							///< from an existing session.
+
+	CONF_SECTION	*recv_reauthentication_response; //!< Process the reauthentication response
+							///< from the supplicant.
+
+	CONF_SECTION	*send_failure_notification;	//!< Called when we're about to send a
+							///< failure notification.
+	CONF_SECTION	*send_success_notification;	//!< Called when we're about to send a
+							///< success notification.
+	CONF_SECTION	*recv_failure_notification_ack;	//!< Called when the supplicant ACKs our
+							///< failure notification.
+	CONF_SECTION	*recv_success_notification_ack;	//!< Called when the supplicant ACKs our
+							///< success notification.
+
+	CONF_SECTION	*send_eap_success;		//!< Called when we send an EAP-Success message.
+	CONF_SECTION	*send_eap_failure;		//!< Called when we send an EAP-Failure message.
+
+	CONF_SECTION	*load_pseudonym;		//!< Resolve a pseudonym to a permanent ID.
+	CONF_SECTION	*store_pseudonym;		//!< Store a permanent ID to pseudonym mapping.
+	CONF_SECTION	*clear_pseudonym;		//!< Clear pseudonym to permanent ID mapping.
+
+	CONF_SECTION	*load_session;			//!< Load cached authentication vectors.
+	CONF_SECTION	*store_session;			//!< Store authentication vectors.
+	CONF_SECTION	*clear_session;			//!< Clear authentication vectors.
 } eap_aka_sim_actions_t;
 
 typedef struct {
