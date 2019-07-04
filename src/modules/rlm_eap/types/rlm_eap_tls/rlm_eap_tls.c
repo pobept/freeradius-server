@@ -317,7 +317,7 @@ static int mod_instantiate(void *instance, CONF_SECTION *cs)
 	return 0;
 }
 
-#define ACTION_SECTION(_out, _field, _verb, _name) \
+#define EAP_SECTION_COMPILE(_out, _field, _verb, _name) \
 do { \
 	CONF_SECTION *_tmp; \
 	_tmp = cf_section_find(server_cs, _verb, _name); \
@@ -337,7 +337,7 @@ static int mod_section_compile(eap_tls_actions_t *actions, CONF_SECTION *server_
 
 	if (!fr_cond_assert(server_cs)) return -1;
 
-	ACTION_SECTION(actions, recv_access_request, "recv", "Access-Request");
+	EAP_SECTION_COMPILE(actions, recv_access_request, "recv", "Access-Request");
 
 	/*
 	 *	Warn if we couldn't find any actions.

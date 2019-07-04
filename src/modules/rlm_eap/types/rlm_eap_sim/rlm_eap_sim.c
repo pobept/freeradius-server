@@ -26,20 +26,18 @@
  */
 RCSID("$Id$")
 
+#include <freeradius-devel/eap/base.h>
 #include <freeradius-devel/eap_aka_sim/state_machine.h>
 #include <freeradius-devel/server/rad_assert.h>
 #include <freeradius-devel/unlang/compile.h>
 #include <freeradius-devel/unlang/module.h>
-
-static int virtual_server_parse(TALLOC_CTX *ctx, void *out, void *parent,
-				CONF_ITEM *ci, UNUSED CONF_PARSER const *rule);
 
 static CONF_PARSER submodule_config[] = {
 	{ FR_CONF_OFFSET("request_identity", FR_TYPE_BOOL, eap_aka_sim_state_conf_t, request_identity ),
 			 .func = cf_table_parse_uint32, .uctx = fr_aka_sim_id_request_table },
 	{ FR_CONF_OFFSET("ephemeral_id_length", FR_TYPE_UINT8, eap_aka_sim_state_conf_t, ephemeral_id_length ), .dflt = "14" },	/* 14 for compatibility */
 	{ FR_CONF_OFFSET("protected_success", FR_TYPE_BOOL, eap_aka_sim_state_conf_t, protected_success ), .dflt = "no" },
-	{ FR_CONF_OFFSET("virtual_server", FR_TYPE_VOID | FR_TYPE_REQUIRED, eap_aka_sim_state_conf_t, virtual_server), .func = virtual_server_parse },
+	{ FR_CONF_OFFSET("virtual_server", FR_TYPE_VOID | FR_TYPE_REQUIRED, eap_aka_sim_state_conf_t, virtual_server), .func = virtual_server_cf_parse },
 	CONF_PARSER_TERMINATOR
 };
 
@@ -50,33 +48,6 @@ fr_dict_autoload_t rlm_eap_aka_dict[] = {
 	{ .out = &dict_eap_aka_sim, .base_dir="eap/aka-sim", .proto = "eap-aka-sim"  },
 	{ NULL }
 };
-
-static int virtual_server_parse(UNUSED TALLOC_CTX *ctx, void *out, UNUSED void *parent,
-				CONF_ITEM *ci, UNUSED CONF_PARSER const *rule)
-{
-	CONF_SECTION	*server_cs;
-
-	server_cs = virtual_server_find(cf_pair_value(cf_item_to_pair(ci)));
-	if (!server_cs) {
-		cf_log_err(ci, "virtual-server \"%s\" not found", cf_pair_value(cf_item_to_pair(ci)));
-		return -1;
-	}
-
-	*((CONF_SECTION **)out) = server_cs;
-
-	return 0;
-}
-
-#define ACTION_SECTION(_out, _field, _verb, _name) \
-do { \
-	CONF_SECTION *_tmp; \
-	_tmp = cf_section_find(server_cs, _verb, _name); \
-	if (_tmp) { \
-		if (unlang_compile(_tmp, MOD_AUTHORIZE, NULL) < 0) return -1; \
-		found = true; \
-	} \
-	if (_out) _out->_field = _tmp; \
-} while (0)
 
 /** Compile virtual server sections
  *
@@ -98,65 +69,65 @@ static int mod_section_compile(eap_aka_sim_actions_t *actions, CONF_SECTION *ser
 	/*
 	 *	Identity negotiation
 	 */
-	ACTION_SECTION(actions, send_identity_request, "send", "Identity-Request");
-	ACTION_SECTION(actions, recv_identity_response, "recv", "Identity-Response");
+	EAP_SECTION_COMPILE(actions, send_identity_request, "send", "Identity-Request");
+	EAP_SECTION_COMPILE(actions, recv_identity_response, "recv", "Identity-Response");
 
 	/*
 	 *	Optional override sections if the user *really*
 	 *	wants to apply special policies for subsequent
 	 *	request/response rounds.
 	 */
-	ACTION_SECTION(actions, sim.send_sim_start_request, "send", "Start");
-	ACTION_SECTION(actions, sim.recv_sim_start_response, "recv", "Start");
+	EAP_SECTION_COMPILE(actions, sim.send_sim_start_request, "send", "Start");
+	EAP_SECTION_COMPILE(actions, sim.recv_sim_start_response, "recv", "Start");
 
 	/*
 	 *	Full-Authentication
 	 */
-	ACTION_SECTION(actions, send_challenge_request, "send", "Challenge-Request");
-	ACTION_SECTION(actions, recv_challenge_response, "recv", "Challenge-Response");
+	EAP_SECTION_COMPILE(actions, send_challenge_request, "send", "Challenge-Request");
+	EAP_SECTION_COMPILE(actions, recv_challenge_response, "recv", "Challenge-Response");
 
 	/*
 	 *	Fast-Re-Authentication
 	 */
-	ACTION_SECTION(actions, send_reauthentication_request, "send", "Reauthentication-Request");
-	ACTION_SECTION(actions, recv_reauthentication_response, "recv", "Reauthentication-Response");
+	EAP_SECTION_COMPILE(actions, send_reauthentication_request, "send", "Reauthentication-Request");
+	EAP_SECTION_COMPILE(actions, recv_reauthentication_response, "recv", "Reauthentication-Response");
 
 	/*
 	 *	Failures originating from the supplicant
 	 */
-	ACTION_SECTION(actions, recv_client_error, "recv", "Client-Error");
+	EAP_SECTION_COMPILE(actions, recv_client_error, "recv", "Client-Error");
 
 	/*
 	 *	Failure originating from the server
 	 */
-	ACTION_SECTION(actions, send_failure_notification, "send", "Failure-Notification");
-	ACTION_SECTION(actions, recv_failure_notification_ack, "recv", "Failure-Notification-ACK");
+	EAP_SECTION_COMPILE(actions, send_failure_notification, "send", "Failure-Notification");
+	EAP_SECTION_COMPILE(actions, recv_failure_notification_ack, "recv", "Failure-Notification-ACK");
 
 	/*
 	 *	Protected success indication
 	 */
-	ACTION_SECTION(actions, send_success_notification, "send", "Success-Notification");
-	ACTION_SECTION(actions, recv_success_notification_ack, "recv", "Success-Notification-ACK");
+	EAP_SECTION_COMPILE(actions, send_success_notification, "send", "Success-Notification");
+	EAP_SECTION_COMPILE(actions, recv_success_notification_ack, "recv", "Success-Notification-ACK");
 
 	/*
 	 *	Final EAP-Success and EAP-Failure messages
 	 */
-	ACTION_SECTION(actions, send_eap_success, "send", "EAP-Success");
-	ACTION_SECTION(actions, send_eap_failure, "send", "EAP-Failure");
+	EAP_SECTION_COMPILE(actions, send_eap_success, "send", "EAP-Success");
+	EAP_SECTION_COMPILE(actions, send_eap_failure, "send", "EAP-Failure");
 
 	/*
 	 *	Fast-Reauth vectors
 	 */
-	ACTION_SECTION(actions, store_session, "store", "session");
-	ACTION_SECTION(actions, load_session, "load", "session");
-	ACTION_SECTION(actions, clear_session, "clear", "session");
+	EAP_SECTION_COMPILE(actions, store_session, "store", "session");
+	EAP_SECTION_COMPILE(actions, load_session, "load", "session");
+	EAP_SECTION_COMPILE(actions, clear_session, "clear", "session");
 
 	/*
 	 *	Pseudonym processing
 	 */
-	ACTION_SECTION(actions, store_pseudonym, "store", "pseudonym");
-	ACTION_SECTION(actions, load_pseudonym, "load", "pseudonym");
-	ACTION_SECTION(actions, clear_pseudonym, "clear", "pseudonym");
+	EAP_SECTION_COMPILE(actions, store_pseudonym, "store", "pseudonym");
+	EAP_SECTION_COMPILE(actions, load_pseudonym, "load", "pseudonym");
+	EAP_SECTION_COMPILE(actions, clear_pseudonym, "clear", "pseudonym");
 
 	/*
 	 *	Warn if we couldn't find any actions.

@@ -46,6 +46,29 @@ RCSIDH(lib_eap_base_h, "$Id$")
 #define REQUEST_DATA_EAP_MSCHAP_TUNNEL_CALLBACK ((FR_EAP_MESSAGE << 16) | FR_EAP_METHOD_MSCHAPV2)
 
 
+#define EAP_SECTION_COMPILE(_out, _field, _verb, _name) \
+do { \
+	CONF_SECTION *_tmp; \
+	_tmp = cf_section_find(server_cs, _verb, _name); \
+	if (_tmp) { \
+		if (unlang_compile(_tmp, MOD_AUTHORIZE, NULL) < 0) return -1; \
+		found = true; \
+	} \
+	if (_out) _out->_field = _tmp; \
+} while (0)
+
+#define EAP_PROCESS_SECTION_COMPILE(_out, _field, _verb, _name) \
+do { \
+	CONF_SECTION *_tmp; \
+	_tmp = cf_section_find(server_cs, _verb, _name); \
+	if (_tmp) { \
+		if (unlang_compile(_tmp, MOD_AUTHENTICATE, NULL) < 0) return -1; \
+		found = true; \
+	} \
+	if (_out) _out->_field = _tmp; \
+} while (0)
+
+
 /*
  *	This is for tunneled callbacks
  */

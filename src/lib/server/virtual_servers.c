@@ -807,6 +807,25 @@ CONF_SECTION *virtual_server_by_child(CONF_SECTION *section)
 	return cf_section_find_in_parent(section, "server", CF_IDENT_ANY);
 }
 
+/** Wrapper for the config parser to allow pass1 resolution of virtual servers
+ *
+ */
+int virtual_server_cf_parse(UNUSED TALLOC_CTX *ctx, void *out, UNUSED void *parent,
+			    CONF_ITEM *ci, UNUSED CONF_PARSER const *rule)
+{
+	CONF_SECTION	*server_cs;
+
+	server_cs = virtual_server_find(cf_pair_value(cf_item_to_pair(ci)));
+	if (!server_cs) {
+		cf_log_err(ci, "virtual-server \"%s\" not found", cf_pair_value(cf_item_to_pair(ci)));
+		return -1;
+	}
+
+	*((CONF_SECTION **)out) = server_cs;
+
+	return 0;
+}
+
 /** Free a virtual namespace callback
  *
  */
