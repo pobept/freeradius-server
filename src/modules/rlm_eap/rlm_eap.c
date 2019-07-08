@@ -513,6 +513,7 @@ static rlm_rcode_t eap_method_select(rlm_eap_t *inst, UNUSED void *thread, eap_s
 	if ((type->num == 0) || (type->num >= FR_EAP_METHOD_MAX)) {
 		REDEBUG("Peer sent EAP type number %d, which is outside known range", type->num);
 
+	is_invalid:
 		return RLM_MODULE_INVALID;
 	}
 
@@ -529,8 +530,7 @@ static rlm_rcode_t eap_method_select(rlm_eap_t *inst, UNUSED void *thread, eap_s
 	if (eap_session->request->parent &&
 	    eap_session->request->parent->parent) {
 		RERROR("Multiple levels of TLS nesting are invalid");
-
-		return RLM_MODULE_INVALID;
+		goto is_invalid;
 	}
 
 	RDEBUG2("Peer sent packet with EAP method %s (%d)", eap_type2name(type->num), type->num);
@@ -555,10 +555,10 @@ static rlm_rcode_t eap_method_select(rlm_eap_t *inst, UNUSED void *thread, eap_s
 		if ((next < FR_EAP_METHOD_MD5) || (next >= FR_EAP_METHOD_MAX) || (!inst->methods[next].submodule)) {
 			REDEBUG2("Tried to start unsupported EAP type %s (%d)",
 				 eap_type2name(next), next);
-			return RLM_MODULE_INVALID;
+			goto is_invalid;
 		}
 
-	do_initiate:
+	do_init:
 		/*
 		 *	If any of these fail, we messed badly somewhere
 		 */
@@ -568,7 +568,7 @@ static rlm_rcode_t eap_method_select(rlm_eap_t *inst, UNUSED void *thread, eap_s
 
 		eap_session->process = inst->methods[next].submodule->session_init;
 		eap_session->type = next;
-		goto module_call;
+		break;
 
 	case FR_EAP_METHOD_NAK:
 		/*
@@ -578,32 +578,32 @@ static rlm_rcode_t eap_method_select(rlm_eap_t *inst, UNUSED void *thread, eap_s
 		 */
 		TALLOC_FREE(eap_session->opaque);
 		next = eap_process_nak(inst, eap_session->request, eap_session->type, type);
+		if (!next) return RLM_MODULE_REJECT;
 
 		/*
-		 *	We probably want to return 'fail' here...
+		 *	Initialise the state machine for the next submodule
 		 */
-		if (!next) return RLM_MODULE_INVALID;
-		goto do_initiate;
+		goto do_init;
 
 	/*
-	 *	Key off of the configured sub-modules.
+	 *	Only allow modules that are enabled to be called,
+	 *	treating any other requests as invalid.
+	 *
+	 *	This may seem a bit harsh, but remember the server
+	 *	dictates which type of EAP method should be started,
+	 *	so this is the supplicant ignoring the normal EAP method
+	 *	negotiation mechanism, by not NAKing and just trying
+	 *	to start a new EAP method.
 	 */
 	default:
+		if (!inst->methods[type->num].submodule) {
+			REDEBUG2("Client asked for unsupported EAP type %s (%d)", eap_type2name(type->num), type->num);
+			goto is_invalid;
+		}
+		eap_session->type = type->num;
 		break;
 	}
 
-	/*
-	 *	We haven't configured it, it doesn't exit.
-	 */
-	if (!inst->methods[type->num].submodule) {
-		REDEBUG2("Client asked for unsupported EAP type %s (%d)", eap_type2name(type->num), type->num);
-
-		return RLM_MODULE_INVALID;
-	}
-
-	eap_session->type = type->num;
-
-module_call:
 	method = &inst->methods[eap_session->type];
 
 	RDEBUG2("Calling submodule %s", method->submodule->name);
@@ -649,6 +649,7 @@ static rlm_rcode_t mod_authenticate(void *instance, void *thread, REQUEST *reque
 	rlm_eap_t		*inst = talloc_get_type_abort(instance, rlm_eap_t);
 	eap_session_t		*eap_session;
 	eap_packet_raw_t	*eap_packet;
+	rlm_rcode_t		rcode;
 
 	if (!fr_pair_find_by_da(request->packet->vps, attr_eap_message, TAG_ANY)) {
 		REDEBUG("You set 'Auth-Type = EAP' for a request that does not contain an EAP-Message attribute!");
@@ -680,7 +681,34 @@ static rlm_rcode_t mod_authenticate(void *instance, void *thread, REQUEST *reque
 	 *	or with simple types like Identity and NAK,
 	 *	process it ourselves.
 	 */
-	return eap_method_select(inst, thread, eap_session);
+	rcode = eap_method_select(inst, thread, eap_session);
+	switch (rcode) {
+ 	/*
+ 	 *	Leave the session thawed, next state
+ 	 *	func will need to re-freeze.
+ 	 */
+	case RLM_MODULE_YIELD:
+		return rcode;
+
+	case RLM_MODULE_OK:
+	case RLM_MODULE_UPDATED:
+		eap_session_freeze(&eap_session);
+		break;
+
+	/*
+	 *	RFC 3748 Section 2
+	 *	The conversation continues until the authenticator cannot
+	 *	authenticate the peer (unacceptable Responses to one or more
+	 *	Requests), in which case the authenticator implementation MUST
+	 *	transmit an EAP Failure (Code 4).
+	 */
+	default:
+		eap_fail(eap_session);
+		eap_session_destroy(&eap_session);
+		break;
+	}
+
+	return rcode;
 }
 
 /*
@@ -831,13 +859,6 @@ static rlm_rcode_t mod_post_proxy(void *instance, UNUSED void *thread, REQUEST *
 	 */
 	if (!request->proxy->reply) return RLM_MODULE_NOOP;
 
-	/*
-	 *	Hmm... there's got to be a better way to
-	 *	discover codes for vendor attributes.
-	 *
-	 *	This is vendor Cisco (9), Cisco-AVPair
-	 *	attribute (1)
-	 */
 	for (vp = fr_cursor_iter_by_da_init(&cursor, &request->proxy->reply->vps, attr_cisco_avpair);
 	     vp;
 	     vp = fr_cursor_next(&cursor)) {
@@ -915,10 +936,9 @@ static rlm_rcode_t mod_post_proxy(void *instance, UNUSED void *thread, REQUEST *
 
 static rlm_rcode_t mod_post_auth(void *instance, UNUSED void *thread, REQUEST *request)
 {
-	rlm_eap_t const		*inst = instance;
+	rlm_eap_t		*inst = talloc_get_type_abort(instance, rlm_eap_t);
 	VALUE_PAIR		*vp;
 	eap_session_t		*eap_session;
-	eap_packet_raw_t	*eap_packet;
 
 	/*
 	 *	If it's an Access-Accept, RFC 2869, Section 2.3.1
@@ -965,27 +985,27 @@ static rlm_rcode_t mod_post_auth(void *instance, UNUSED void *thread, REQUEST *r
 	}
 
 	/*
-	 *	Reconstruct the EAP packet from EAP-Message fragments
-	 *	in the request.
-	 */
-	eap_packet = eap_packet_from_vp(request, request->packet->vps);
-	if (!eap_packet) {
-		RPERROR("Malformed EAP Message");
-		return RLM_MODULE_FAIL;
-	}
-
-	/*
 	 *	Retrieve pre-existing eap_session from request
 	 *	data.  This will have been added to the request
 	 *	data by the state API.
 	 */
-	eap_session = eap_session_continue(instance, &eap_packet, request);
+	eap_session = eap_session_thaw(request);
 	if (!eap_session) {
-		RDEBUG2("Failed to get eap_session, probably already removed, not inserting EAP-Failure");
+		RDEBUG3("Failed to get eap_session, probably already removed, not inserting EAP-Failure");
 		return RLM_MODULE_NOOP;
 	}
 
-	REDEBUG("Request was previously rejected, inserting EAP-Failure");
+	/*
+	 *	Already set to failure, assume something else
+	 *	added EAP-Message with a failure code, do nothing.
+	 */
+	if (eap_session->this_round->request->code == FR_EAP_CODE_FAILURE) return RLM_MODULE_NOOP;
+
+	/*
+	 *	Was *NOT* an EAP-Failure, so we now need to turn it into one.
+	 */
+	REDEBUG("Request rejected after last call to module \"%s\", transforming response into EAP-Failure",
+		inst->name);
 	eap_fail(eap_session);				/* Compose an EAP failure */
 	eap_session_destroy(&eap_session);		/* Free the EAP session, and dissociate it from the request */
 
