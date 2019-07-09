@@ -793,7 +793,7 @@ static int common_encode(REQUEST *request, eap_session_t *eap_session, uint16_t 
 	if (RDEBUG_ENABLED2) {
 		switch (subtype) {
 		case FR_SUBTYPE_VALUE_SIM_START:
-		case FR_SUBTYPE_VALUE_IDENTITY:
+		case FR_SUBTYPE_VALUE_AKA_IDENTITY:
 			RDEBUG2("Sending EAP-Request/%pV (%s)", &subtype_vp->data,
 				fr_int2str(fr_aka_sim_id_request_table, eap_aka_sim_session->id_req, "<INVALID>"));
 			break;
@@ -965,7 +965,7 @@ static rlm_rcode_t common_failure_notification_send(eap_aka_sim_state_conf_t *in
 	/*
 	 *	Encode the packet
 	 */
-	if (common_encode(request, eap_session, FR_SUBTYPE_VALUE_NOTIFICATION, NULL, 0) < 0) {
+	if (common_encode(request, eap_session, FR_SUBTYPE_VALUE_AKA_SIM_NOTIFICATION, NULL, 0) < 0) {
 		return common_failure_notification_enter(inst, request, eap_session);
 	}
 
@@ -1053,7 +1053,7 @@ static rlm_rcode_t common_success_notification_send(eap_aka_sim_state_conf_t *in
 	/*
 	 *	Encode the packet
 	 */
-	if (common_encode(request, eap_session, FR_SUBTYPE_VALUE_NOTIFICATION, NULL, 0) < 0) {
+	if (common_encode(request, eap_session, FR_SUBTYPE_VALUE_AKA_SIM_NOTIFICATION, NULL, 0) < 0) {
 		return common_failure_notification_enter(inst, request, eap_session);
 	}
 
@@ -1070,7 +1070,7 @@ static rlm_rcode_t common_reauthentication_request_send(eap_aka_sim_state_conf_t
 	 *	Encode the packet - AT_IV is handled automatically
 	 *	by the encoder.
 	 */
-	if (common_encode(request, eap_session, FR_SUBTYPE_VALUE_REAUTHENTICATION, NULL, 0) < 0) {
+	if (common_encode(request, eap_session, FR_SUBTYPE_VALUE_AKA_SIM_REAUTHENTICATION, NULL, 0) < 0) {
 		return common_failure_notification_enter(inst, request, eap_session);
 	}
 
@@ -1583,7 +1583,7 @@ static rlm_rcode_t aka_identity_request_send(eap_aka_sim_state_conf_t *inst,
 	/*
 	 *	Encode the packet
 	 */
-	if (common_encode(request, eap_session, FR_SUBTYPE_VALUE_IDENTITY, NULL, 0) < 0) goto failure;
+	if (common_encode(request, eap_session, FR_SUBTYPE_VALUE_AKA_IDENTITY, NULL, 0) < 0) goto failure;
 
 	/*
 	 *	Digest the packet contents, updating our checkcode.
@@ -3146,7 +3146,7 @@ static rlm_rcode_t common_failure_notification(void *instance, UNUSED void *thre
 	rad_assert(subtype_vp);
 #endif
 	switch (subtype_vp->vp_uint16) {
-	case FR_SUBTYPE_VALUE_NOTIFICATION:
+	case FR_SUBTYPE_VALUE_AKA_SIM_NOTIFICATION:
 		RDEBUG2("Failure-Notification ACKed, sending EAP-Failure");
 		return unlang_module_yield_to_section(request,
 						      inst->actions.recv_failure_notification_ack,
@@ -3385,7 +3385,7 @@ static rlm_rcode_t common_reauthentication(void *instance, UNUSED void *thread, 
 	 *	EAP_AKA_SYNCHRONIZATION_FAILURE	- We didn't use new vectors.
 	 */
 	switch (subtype_vp->vp_uint16) {
-	case FR_SUBTYPE_VALUE_REAUTHENTICATION:
+	case FR_SUBTYPE_VALUE_AKA_SIM_REAUTHENTICATION:
 		/*
 		 *	AT_COUNTER_TOO_SMALL is handled
 		 *      in common_reauthentication_response_process.
@@ -3400,7 +3400,7 @@ static rlm_rcode_t common_reauthentication(void *instance, UNUSED void *thread, 
 	/*
 	 *	Case 1 where we're allowed to send an EAP-Failure
 	 */
-	case FR_SUBTYPE_VALUE_CLIENT_ERROR:
+	case FR_SUBTYPE_VALUE_AKA_SIM_CLIENT_ERROR:
 		client_error_debug(request, from_peer);
 
 		eap_aka_sim_session->allow_encrypted = false;
@@ -3516,7 +3516,7 @@ static rlm_rcode_t aka_challenge(void *instance, UNUSED void *thread, REQUEST *r
 	/*
 	 *	Case 1 where we're allowed to send an EAP-Failure
 	 */
-	case FR_SUBTYPE_VALUE_CLIENT_ERROR:
+	case FR_SUBTYPE_VALUE_AKA_SIM_CLIENT_ERROR:
 		client_error_debug(request, from_peer);
 
 		eap_aka_sim_session->allow_encrypted = false;
@@ -3571,7 +3571,7 @@ static rlm_rcode_t sim_challenge(void *instance, UNUSED void *thread, REQUEST *r
 	/*
 	 *	Case 1 where we're allowed to send an EAP-Failure
 	 */
-	case FR_SUBTYPE_VALUE_CLIENT_ERROR:
+	case FR_SUBTYPE_VALUE_AKA_SIM_CLIENT_ERROR:
 		client_error_debug(request, from_peer);
 
 		eap_aka_sim_session->allow_encrypted = false;
@@ -3620,7 +3620,7 @@ static rlm_rcode_t aka_identity(void *instance, UNUSED void *thread, REQUEST *re
 	/*
 	 *	This is the subtype we expect
 	 */
-	case FR_SUBTYPE_VALUE_IDENTITY:
+	case FR_SUBTYPE_VALUE_AKA_IDENTITY:
 	{
 		VALUE_PAIR	*id;
 
@@ -3659,7 +3659,7 @@ static rlm_rcode_t aka_identity(void *instance, UNUSED void *thread, REQUEST *re
 	 *	peer, where it refuses to provide the permanent
 	 *	identity.
 	 */
-	case FR_SUBTYPE_VALUE_CLIENT_ERROR:
+	case FR_SUBTYPE_VALUE_AKA_SIM_CLIENT_ERROR:
 		client_error_debug(request, from_peer);
 
 		return unlang_module_yield_to_section(request,
@@ -3739,7 +3739,7 @@ static rlm_rcode_t sim_start(void *instance, UNUSED void *thread, REQUEST *reque
 	 *	peer, where it refuses to provide the permanent
 	 *	identity.
 	 */
-	case FR_SUBTYPE_VALUE_CLIENT_ERROR:
+	case FR_SUBTYPE_VALUE_AKA_SIM_CLIENT_ERROR:
 		client_error_debug(request, from_peer);
 
 		return unlang_module_yield_to_section(request,

@@ -15,12 +15,12 @@ ATTRIBUTE	Subtype				256	integer
 VALUE	Subtype			AKA-Challenge			1
 VALUE	Subtype			AKA-Authentication-Reject 	2
 VALUE	Subtype			AKA-Synchronization-Failure 	4
-VALUE	Subtype			Identity			5
+VALUE	Subtype			AKA-Identity			5	# EAP-SIM uses SIM-Start packets for the same purpose
 VALUE	Subtype			SIM-Start			10
 VALUE	Subtype			SIM-Challenge			11
-VALUE	Subtype			Notification			12
-VALUE	Subtype			Reauthentication		13
-VALUE	Subtype			Client-Error			14
+VALUE	Subtype			AKA-SIM-Notification		12
+VALUE	Subtype			AKA-SIM-Reauthentication	13
+VALUE	Subtype			AKA-SIM-Client-Error		14
 
 ATTRIBUTE	HMAC				257	string
 ATTRIBUTE	Key				258	octets
@@ -48,7 +48,7 @@ ATTRIBUTE	Method-Hint			280	integer
 VALUE	Method-Hint		AKA-Prime		0
 VALUE	Method-Hint		AKA			1
 VALUE	Method-Hint		SIM			2
- 
+
 ATTRIBUTE	Identity-Type			281	integer
 
 VALUE	Identity-Type		Permanent		0
