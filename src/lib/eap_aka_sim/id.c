@@ -92,7 +92,7 @@ char const *fr_aka_sim_domain(char const *nai, size_t nai_len)
  *	- <= 0 on error - The negative offset of where parsing failed.
  */
 ssize_t fr_aka_sim_3gpp_root_nai_domain_mcc_mnc(uint16_t *mnc, uint16_t *mcc,
-					    char const *domain, size_t domain_len)
+						char const *domain, size_t domain_len)
 {
 	char const *p = domain, *end = p + domain_len;
 	char *q;
@@ -194,7 +194,9 @@ int fr_aka_sim_id_type(fr_aka_sim_id_type_t *type, fr_aka_sim_method_hint_t *hin
 
 		for (i = 1; i < id_len; i++) {
 			if (!isdigit(id[i])) {
-				fr_strerror_printf("Invalid digit '%c' in IMSI \"%.*s\"", id[i], (int)id_len, id);
+				fr_strerror_printf("Invalid digit '%pV' in IMSI \"%pV\"",
+						   fr_box_strvalue_len(&id[i], 1),
+						   fr_box_strvalue_len(id, id_len));
 				goto bad_format;
 			}
 		}
@@ -276,7 +278,7 @@ bad_format:
 	default:
 		*hint = AKA_SIM_METHOD_HINT_UNKNOWN;
 		*type = AKA_SIM_ID_TYPE_UNKNOWN;
-		fr_strerror_printf_push("Unrecognised tag '%c'", id[0]);
+		fr_strerror_printf_push("Unrecognised tag '%pV'", fr_box_strvalue_len(id, 1));
 		return -1;
 	}
 }
@@ -543,7 +545,8 @@ int fr_aka_sim_id_3gpp_pseudonym_decrypt(char out[AKA_SIM_IMSI_MAX_LEN + 1],
 
 	for (i = 0; i < AKA_SIM_3GPP_PSEUDONYM_LEN; i++) {
 		if (!fr_is_base64(encr_id[i])) {
-			fr_strerror_printf("Encrypted IMSI contains non-base64 char '%c'", encr_id[i]);
+			fr_strerror_printf("Encrypted IMSI contains non-base64 char '%pV'",
+					   fr_box_strvalue_len(&encr_id[i], 1));
 			return -1;
 		}
 	}
