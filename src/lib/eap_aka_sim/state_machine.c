@@ -342,6 +342,9 @@ static int id_req_pairs_add(REQUEST *request, eap_aka_sim_session_t *eap_aka_sim
  * told it was a permanent ID, then trim the first byte to form the
  * real permanent ID.
  *
+ * Otherwise copy the entire incoming Identity to the
+ * &session-state:Permanent-Identity attribute.
+ *
  * Adds &session-state:Permanent-Id.
  *
  * @param[in] request	The current request.
@@ -352,6 +355,8 @@ static int id_to_permanent_id(REQUEST *request, VALUE_PAIR *in, eap_type_t eap_t
 {
 	fr_aka_sim_id_type_t		our_type;
 	fr_aka_sim_method_hint_t	our_method, expected_method;
+	VALUE_PAIR			*vp;
+	char			        *q;
 
 	if (in->vp_length == 0) {
 		RDEBUG2("Not processing zero length identity");
@@ -394,20 +399,18 @@ static int id_to_permanent_id(REQUEST *request, VALUE_PAIR *in, eap_type_t eap_t
 	 */
 	if ((fr_aka_sim_id_type(&our_type, &our_method, in->vp_strvalue, in->vp_length) < 0) ||
 	    (our_type != AKA_SIM_ID_TYPE_PERMANENT)) {
-		VALUE_PAIR *vp;
-
-		RDEBUG2("&%s has incorrect hint byte, expected '%c', got '%c', "
-			"copying identity to &session-state:%s verbatim without stripping",
-			in->da->name,
-			fr_aka_sim_hint_byte(AKA_SIM_ID_TYPE_PERMANENT, expected_method),
-			fr_aka_sim_hint_byte(our_type, our_method),
-			attr_eap_aka_sim_permanent_id->name);
-
 		MEM(fr_pair_add_by_da(request->state_ctx, &vp, &request->state, attr_eap_aka_sim_permanent_id) >= 0);
-		fr_pair_value_copy(vp, in);
-	} else {
-		VALUE_PAIR *vp;
+		fr_pair_value_bstrncpy(vp, in->vp_strvalue, in->vp_length);
 
+		RDEBUG2("%s has incorrect hint byte, expected '%c', got '%c'.  "
+			"'hint' byte not stripped",
+			attr_eap_aka_sim_permanent_id->name,
+			fr_aka_sim_hint_byte(AKA_SIM_ID_TYPE_PERMANENT, expected_method),
+			fr_aka_sim_hint_byte(our_type, our_method));
+		RINDENT();
+		RDEBUG2("&session-state:%pP", vp);
+		REXDENT();
+	} else {
 		/*
 		 *	To get here the identity must be >= 1 and must have
 		 *      had the expected hint byte.
@@ -418,7 +421,10 @@ static int id_to_permanent_id(REQUEST *request, VALUE_PAIR *in, eap_type_t eap_t
 		MEM(fr_pair_add_by_da(request->state_ctx, &vp, &request->state, attr_eap_aka_sim_permanent_id) >= 0);
 		fr_pair_value_bstrncpy(vp, in->vp_strvalue + 1, in->vp_length - 1);
 
-		RDEBUG2("Stripping identity hint and copying &%s to &session-state:%pP", in->da->name, vp);
+		RDEBUG2("Stripping 'hint' byte from %s", attr_eap_aka_sim_permanent_id->name);
+		RINDENT();
+		RDEBUG2("&session-state:%pP", vp);
+		REXDENT();
 	}
 
 	return 0;
