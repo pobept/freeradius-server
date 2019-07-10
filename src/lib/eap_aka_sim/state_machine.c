@@ -345,27 +345,24 @@ static int id_req_pairs_add(REQUEST *request, eap_aka_sim_session_t *eap_aka_sim
  * Otherwise copy the entire incoming Identity to the
  * &session-state:Permanent-Identity attribute.
  *
- * Adds &session-state:Permanent-Id.
- *
  * @param[in] request	The current request.
  * @param[in] in	current identity.
  * @param[in] eap_type	The current eap_type.
  */
-static int id_to_permanent_id(REQUEST *request, VALUE_PAIR *in, eap_type_t eap_type)
+static int identity_to_permanent_identity(REQUEST *request, VALUE_PAIR *in, eap_type_t eap_type)
 {
 	fr_aka_sim_id_type_t		our_type;
 	fr_aka_sim_method_hint_t	our_method, expected_method;
 	VALUE_PAIR			*vp;
-	char			        *q;
 
 	if (in->vp_length == 0) {
 		RDEBUG2("Not processing zero length identity");
 		return -1;
 	}
 
-	if (fr_pair_find_by_da(request->state, attr_eap_aka_sim_permanent_id, TAG_ANY)) {
+	if (fr_pair_find_by_da(request->state, attr_eap_aka_sim_permanent_identity, TAG_ANY)) {
 		RDEBUG2("Not overriding &session-state:%s set by policy",
-			attr_eap_aka_sim_permanent_id->name);
+			attr_eap_aka_sim_permanent_identity->name);
 		return -1;
 	}
 
@@ -399,12 +396,13 @@ static int id_to_permanent_id(REQUEST *request, VALUE_PAIR *in, eap_type_t eap_t
 	 */
 	if ((fr_aka_sim_id_type(&our_type, &our_method, in->vp_strvalue, in->vp_length) < 0) ||
 	    (our_type != AKA_SIM_ID_TYPE_PERMANENT)) {
-		MEM(fr_pair_add_by_da(request->state_ctx, &vp, &request->state, attr_eap_aka_sim_permanent_id) >= 0);
+		MEM(fr_pair_add_by_da(request->state_ctx, &vp,
+				      &request->state, attr_eap_aka_sim_permanent_identity) >= 0);
 		fr_pair_value_bstrncpy(vp, in->vp_strvalue, in->vp_length);
 
 		RDEBUG2("%s has incorrect hint byte, expected '%c', got '%c'.  "
 			"'hint' byte not stripped",
-			attr_eap_aka_sim_permanent_id->name,
+			attr_eap_aka_sim_permanent_identity->name,
 			fr_aka_sim_hint_byte(AKA_SIM_ID_TYPE_PERMANENT, expected_method),
 			fr_aka_sim_hint_byte(our_type, our_method));
 		RINDENT();
@@ -418,10 +416,11 @@ static int id_to_permanent_id(REQUEST *request, VALUE_PAIR *in, eap_type_t eap_t
 		 *	Strip off the hint byte, and then add the permanent
 		 *	identity to the output list.
 		 */
-		MEM(fr_pair_add_by_da(request->state_ctx, &vp, &request->state, attr_eap_aka_sim_permanent_id) >= 0);
+		MEM(fr_pair_add_by_da(request->state_ctx, &vp,
+				      &request->state, attr_eap_aka_sim_permanent_identity) >= 0);
 		fr_pair_value_bstrncpy(vp, in->vp_strvalue + 1, in->vp_length - 1);
 
-		RDEBUG2("Stripping 'hint' byte from %s", attr_eap_aka_sim_permanent_id->name);
+		RDEBUG2("Stripping 'hint' byte from %s", attr_eap_aka_sim_permanent_identity->name);
 		RINDENT();
 		RDEBUG2("&session-state:%pP", vp);
 		REXDENT();
@@ -1967,7 +1966,7 @@ static rlm_rcode_t common_reauthentication_send_resume(UNUSED void *instance, UN
 
 		case AKA_SIM_FULLAUTH_ID_REQ:
 		case AKA_SIM_PERMANENT_ID_REQ:
-			REDEBUG("Last requested Full-Auth-Id or Permanent-Id, "
+			REDEBUG("Last requested Full-Auth-Id or Permanent-Identity, "
 				"but received a Fast-Auth-Id.  Cannot continue");
 		failure:
 			return common_failure_notification_enter(inst, request, eap_session);
@@ -2034,7 +2033,7 @@ static rlm_rcode_t session_load_resume(void *instance, UNUSED void *thread,
 
 		case AKA_SIM_FULLAUTH_ID_REQ:
 		case AKA_SIM_PERMANENT_ID_REQ:
-			REDEBUG("Last requested Full-Auth-Id or Permanent-Id, "
+			REDEBUG("Last requested Full-Auth-Id or Permanent-Identity, "
 				"but received a Fast-Auth-Id.  Cannot continue");
 			return common_failure_notification_enter(inst, request, eap_session);
 
@@ -2103,7 +2102,7 @@ static rlm_rcode_t pseudonym_load_resume(void *instance, UNUSED void *thread,
 			return common_identity_enter(inst, request, eap_session);
 
 		case AKA_SIM_PERMANENT_ID_REQ:
-			REDEBUG("Last requested a Permanent-Id, but received a Pseudonym.  Cannot continue");
+			REDEBUG("Last requested a Permanent-Identity, but received a Pseudonym.  Cannot continue");
 		failure:
 			return common_failure_notification_enter(inst, request, eap_session);
 		}
@@ -2841,7 +2840,7 @@ static rlm_rcode_t aka_identity_response_process(eap_aka_sim_state_conf_t *inst,
 		VALUE_PAIR *vp;
 
 		vp = fr_pair_find_by_da(from_peer, attr_eap_aka_sim_identity, TAG_ANY);
-		if (vp) id_to_permanent_id(request, vp, eap_aka_sim_session->type);
+		if (vp) identity_to_permanent_identity(request, vp, eap_aka_sim_session->type);
 	}
 		/* FALL-THROUGH */
 	default:
@@ -3039,7 +3038,7 @@ static rlm_rcode_t sim_start_response_process(eap_aka_sim_state_conf_t *inst,
 		if (sim_start_nonce_mt_check(request, from_peer, eap_aka_sim_session) < 0) goto failure;
 
 		vp = fr_pair_find_by_da(from_peer, attr_eap_aka_sim_identity, TAG_ANY);
-		if (vp) id_to_permanent_id(request, vp, eap_aka_sim_session->type);
+		if (vp) identity_to_permanent_identity(request, vp, eap_aka_sim_session->type);
 	}
 		/* FALL-THROUGH */
 	default:
@@ -3950,7 +3949,7 @@ static rlm_rcode_t common_eap_identity_resume(void *instance, UNUSED void *threa
 		VALUE_PAIR *vp;
 
 		vp = fr_pair_find_by_da(from_peer, attr_eap_aka_sim_identity, TAG_ANY);
-		if (vp) id_to_permanent_id(request, vp, eap_aka_sim_session->type);
+		if (vp) identity_to_permanent_identity(request, vp, eap_aka_sim_session->type);
 	}
 		/* FALL-THROUGH */
 

@@ -55,7 +55,7 @@ VALUE	Identity-Type		Permanent		0
 VALUE	Identity-Type		Pseudonym		1
 VALUE	Identity-Type		Fastauth		2
 
-ATTRIBUTE	Permanent-Id			282	string
+ATTRIBUTE	Permanent-Identity			282	string
 
 #
 #  Reauthentication

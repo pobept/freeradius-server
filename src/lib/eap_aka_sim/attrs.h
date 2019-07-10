@@ -62,7 +62,7 @@ extern fr_dict_attr_t const *attr_eap_aka_sim_nonce_s;
 extern fr_dict_attr_t const *attr_eap_aka_sim_notification;
 extern fr_dict_attr_t const *attr_eap_aka_sim_padding;
 extern fr_dict_attr_t const *attr_eap_aka_sim_permanent_id_req;
-extern fr_dict_attr_t const *attr_eap_aka_sim_permanent_id;
+extern fr_dict_attr_t const *attr_eap_aka_sim_permanent_identity;
 extern fr_dict_attr_t const *attr_eap_aka_sim_rand;
 extern fr_dict_attr_t const *attr_eap_aka_sim_res;
 extern fr_dict_attr_t const *attr_eap_aka_sim_result_ind;

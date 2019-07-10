@@ -82,7 +82,7 @@ fr_dict_attr_t const *attr_eap_aka_sim_nonce_s;
 fr_dict_attr_t const *attr_eap_aka_sim_notification;
 fr_dict_attr_t const *attr_eap_aka_sim_padding;
 fr_dict_attr_t const *attr_eap_aka_sim_permanent_id_req;
-fr_dict_attr_t const *attr_eap_aka_sim_permanent_id;
+fr_dict_attr_t const *attr_eap_aka_sim_permanent_identity;
 fr_dict_attr_t const *attr_eap_aka_sim_rand;
 fr_dict_attr_t const *attr_eap_aka_sim_res;
 fr_dict_attr_t const *attr_eap_aka_sim_result_ind;
@@ -138,7 +138,7 @@ fr_dict_attr_autoload_t libfreeradius_aka_sim_dict_attr[] = {
 	{ .out = &attr_eap_aka_sim_notification, .name = "Notification", .type = FR_TYPE_UINT16, .dict = &dict_eap_aka_sim },
 	{ .out = &attr_eap_aka_sim_padding, .name = "Padding", .type = FR_TYPE_OCTETS, .dict = &dict_eap_aka_sim },
 	{ .out = &attr_eap_aka_sim_permanent_id_req, .name = "Permanent-Id-Req", .type = FR_TYPE_BOOL, .dict = &dict_eap_aka_sim },
-	{ .out = &attr_eap_aka_sim_permanent_id, .name = "Permanent-ID", .type = FR_TYPE_STRING, .dict = &dict_eap_aka_sim },
+	{ .out = &attr_eap_aka_sim_permanent_identity, .name = "Permanent-Identity", .type = FR_TYPE_STRING, .dict = &dict_eap_aka_sim },
 	{ .out = &attr_eap_aka_sim_rand, .name = "RAND", .type = FR_TYPE_OCTETS, .dict = &dict_eap_aka_sim },
 	{ .out = &attr_eap_aka_sim_res, .name = "RES", .type = FR_TYPE_OCTETS, .dict = &dict_eap_aka_sim },
 	{ .out = &attr_eap_aka_sim_result_ind, .name = "Result-Ind", .type = FR_TYPE_BOOL, .dict = &dict_eap_aka_sim },
