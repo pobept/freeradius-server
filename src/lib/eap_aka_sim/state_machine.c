@@ -2458,7 +2458,7 @@ static rlm_rcode_t common_reauthentication_response_process(eap_aka_sim_state_co
 	checkcode = fr_pair_find_by_da(from_peer, attr_eap_aka_sim_checkcode, TAG_ANY);
 	if (checkcode) {
 		if (checkcode->vp_length != eap_aka_sim_session->checkcode_len) {
-			REDEBUG("Checkcode length (%zu) does not match calculated checkcode length (%zu)",
+			REDEBUG("Received checkcode's length (%zu) does not match calculated checkcode's length (%zu)",
 				checkcode->vp_length, eap_aka_sim_session->checkcode_len);
 			goto failure;
 		}
@@ -2576,7 +2576,8 @@ static rlm_rcode_t aka_challenge_response_process(eap_aka_sim_state_conf_t *inst
 		checkcode = fr_pair_find_by_da(from_peer, attr_eap_aka_sim_checkcode, TAG_ANY);
 		if (checkcode) {
 			if (checkcode->vp_length != eap_aka_sim_session->checkcode_len) {
-				REDEBUG("Checkcode length (%zu) does not match calculated checkcode length (%zu)",
+				REDEBUG("Received checkcode's length (%zu) does not match "
+					"calculated checkcode's length (%zu)",
 					checkcode->vp_length, eap_aka_sim_session->checkcode_len);
 				goto failure;
 			}
@@ -2606,20 +2607,20 @@ static rlm_rcode_t aka_challenge_response_process(eap_aka_sim_state_conf_t *inst
 	}
 
 	if (vp->vp_length != eap_aka_sim_session->keys.umts.vector.xres_len) {
-		REDEBUG("RES length (%zu) does not match XRES length (%zu)",
+		REDEBUG("Received RES' length (%zu) does not match calculated XRES' length (%zu)",
 			vp->vp_length, eap_aka_sim_session->keys.umts.vector.xres_len);
 		goto failure;
 	}
 
   	if (memcmp(vp->vp_octets, eap_aka_sim_session->keys.umts.vector.xres, vp->vp_length)) {
-    		REDEBUG("RES from client does match XRES");
+    		REDEBUG("Received RES does not match calculated XRES");
 		RHEXDUMP_INLINE(L_DBG_LVL_2, vp->vp_octets, vp->vp_length, "RES  :");
 		RHEXDUMP_INLINE(L_DBG_LVL_2, eap_aka_sim_session->keys.umts.vector.xres,
 				eap_aka_sim_session->keys.umts.vector.xres_len, "XRES :");
 		goto failure;
 	}
 
-	RDEBUG2("RES matches XRES");
+	RDEBUG2("Received RES matches calculated XRES");
 
 	eap_aka_sim_session->challenge_success = true;
 
