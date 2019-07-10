@@ -79,7 +79,7 @@ static module_state_func_table_t const aka_sim_stable_table[] = {
 	{ "AKA-CHALLENGE",		aka_challenge			},
 	{ "SIM-CHALLENGE",		sim_challenge			},
 	{ "IDENTITY",			aka_identity			},
-	{ "START",			sim_start			},
+	{ "SIM-START",			sim_start			},
 	{ "EAP-IDENTITY",		aka_sim_state_machine_start	},
 
 	{ NULL }
@@ -193,9 +193,10 @@ static bool id_req_set_by_user(REQUEST *request, eap_aka_sim_session_t *eap_aka_
 	return set_by_user;
 }
 
-static void id_hint_pairs_add(REQUEST *request, char const *identity)
+static void id_hint_pairs_add(fr_aka_sim_id_type_t *type_p, fr_aka_sim_method_hint_t *method_p,
+			      REQUEST *request, char const *identity)
 {
-	fr_aka_sim_id_type_t	type;
+	fr_aka_sim_id_type_t		type;
 	fr_aka_sim_method_hint_t	method;
 
 	/*
@@ -259,6 +260,9 @@ static void id_hint_pairs_add(REQUEST *request, char const *identity)
 			rad_assert(0);
 		}
 	}
+
+	if (type_p) *type_p = type;
+	if (method_p) *method_p = method;
 }
 
 /** Print out the error the client returned
@@ -343,7 +347,7 @@ static int id_req_pairs_add(REQUEST *request, eap_aka_sim_session_t *eap_aka_sim
  * real permanent ID.
  *
  * Otherwise copy the entire incoming Identity to the
- * &session-state:Permanent-Identity attribute.
+ * &session-state:Permanent-Identityentity attribute.
  *
  * @param[in] request	The current request.
  * @param[in] in	current identity.
@@ -357,12 +361,6 @@ static int identity_to_permanent_identity(REQUEST *request, VALUE_PAIR *in, eap_
 
 	if (in->vp_length == 0) {
 		RDEBUG2("Not processing zero length identity");
-		return -1;
-	}
-
-	if (fr_pair_find_by_da(request->state, attr_eap_aka_sim_permanent_identity, TAG_ANY)) {
-		RDEBUG2("Not overriding &session-state:%s set by policy",
-			attr_eap_aka_sim_permanent_identity->name);
 		return -1;
 	}
 
@@ -396,8 +394,8 @@ static int identity_to_permanent_identity(REQUEST *request, VALUE_PAIR *in, eap_
 	 */
 	if ((fr_aka_sim_id_type(&our_type, &our_method, in->vp_strvalue, in->vp_length) < 0) ||
 	    (our_type != AKA_SIM_ID_TYPE_PERMANENT)) {
-		MEM(fr_pair_add_by_da(request->state_ctx, &vp,
-				      &request->state, attr_eap_aka_sim_permanent_identity) >= 0);
+		MEM(fr_pair_update_by_da(request->state_ctx, &vp,
+					 &request->state, attr_eap_aka_sim_permanent_identity) >= 0);
 		fr_pair_value_bstrncpy(vp, in->vp_strvalue, in->vp_length);
 
 		RDEBUG2("%s has incorrect hint byte, expected '%c', got '%c'.  "
@@ -416,8 +414,8 @@ static int identity_to_permanent_identity(REQUEST *request, VALUE_PAIR *in, eap_
 		 *	Strip off the hint byte, and then add the permanent
 		 *	identity to the output list.
 		 */
-		MEM(fr_pair_add_by_da(request->state_ctx, &vp,
-				      &request->state, attr_eap_aka_sim_permanent_identity) >= 0);
+		MEM(fr_pair_update_by_da(request->state_ctx, &vp,
+					 &request->state, attr_eap_aka_sim_permanent_identity) >= 0);
 		fr_pair_value_bstrncpy(vp, in->vp_strvalue + 1, in->vp_length - 1);
 
 		RDEBUG2("Stripping 'hint' byte from %s", attr_eap_aka_sim_permanent_identity->name);
@@ -1966,7 +1964,7 @@ static rlm_rcode_t common_reauthentication_send_resume(UNUSED void *instance, UN
 
 		case AKA_SIM_FULLAUTH_ID_REQ:
 		case AKA_SIM_PERMANENT_ID_REQ:
-			REDEBUG("Last requested Full-Auth-Id or Permanent-Identity, "
+			REDEBUG("Last requested Full-Auth-Id or Permanent-Identityentity, "
 				"but received a Fast-Auth-Id.  Cannot continue");
 		failure:
 			return common_failure_notification_enter(inst, request, eap_session);
@@ -2033,7 +2031,7 @@ static rlm_rcode_t session_load_resume(void *instance, UNUSED void *thread,
 
 		case AKA_SIM_FULLAUTH_ID_REQ:
 		case AKA_SIM_PERMANENT_ID_REQ:
-			REDEBUG("Last requested Full-Auth-Id or Permanent-Identity, "
+			REDEBUG("Last requested Full-Auth-Id or Permanent-Identityentity, "
 				"but received a Fast-Auth-Id.  Cannot continue");
 			return common_failure_notification_enter(inst, request, eap_session);
 
@@ -2102,7 +2100,7 @@ static rlm_rcode_t pseudonym_load_resume(void *instance, UNUSED void *thread,
 			return common_identity_enter(inst, request, eap_session);
 
 		case AKA_SIM_PERMANENT_ID_REQ:
-			REDEBUG("Last requested a Permanent-Identity, but received a Pseudonym.  Cannot continue");
+			REDEBUG("Last requested a Permanent-Identityentity, but received a Pseudonym.  Cannot continue");
 		failure:
 			return common_failure_notification_enter(inst, request, eap_session);
 		}
@@ -2126,7 +2124,7 @@ static rlm_rcode_t pseudonym_load_resume(void *instance, UNUSED void *thread,
  *
  */
 static rlm_rcode_t common_reauthentication_enter(eap_aka_sim_state_conf_t *inst,
-					      REQUEST *request, eap_session_t *eap_session)
+						 REQUEST *request, eap_session_t *eap_session)
 {
 	VALUE_PAIR		*vp = NULL;
 	eap_aka_sim_session_t	*eap_aka_sim_session = talloc_get_type_abort(eap_session->opaque,
@@ -2828,21 +2826,6 @@ static rlm_rcode_t aka_identity_response_process(eap_aka_sim_state_conf_t *inst,
 						      pseudonym_load_resume,
 						      mod_signal,
 						      aka_challenge_enter);
-
-	/*
-	 *	If it's a permanent ID, copy it over to
-	 *	the session state list for use in the
-	 *      store pseudonym/store session sections
-	 *	later.
-	 */
-	case FR_IDENTITY_TYPE_VALUE_PERMANENT:
-	{
-		VALUE_PAIR *vp;
-
-		vp = fr_pair_find_by_da(from_peer, attr_eap_aka_sim_identity, TAG_ANY);
-		if (vp) identity_to_permanent_identity(request, vp, eap_aka_sim_session->type);
-	}
-		/* FALL-THROUGH */
 	default:
 		break;
 	}
@@ -3031,15 +3014,9 @@ static rlm_rcode_t sim_start_response_process(eap_aka_sim_state_conf_t *inst,
 	 *	later.
 	 */
 	case FR_IDENTITY_TYPE_VALUE_PERMANENT:
-	{
-		VALUE_PAIR *vp;
-
 		if (sim_start_selected_version_check(request, from_peer, eap_aka_sim_session) < 0) goto failure;
 		if (sim_start_nonce_mt_check(request, from_peer, eap_aka_sim_session) < 0) goto failure;
 
-		vp = fr_pair_find_by_da(from_peer, attr_eap_aka_sim_identity, TAG_ANY);
-		if (vp) identity_to_permanent_identity(request, vp, eap_aka_sim_session->type);
-	}
 		/* FALL-THROUGH */
 	default:
 		break;
@@ -3428,7 +3405,7 @@ static rlm_rcode_t common_reauthentication(void *instance, UNUSED void *thread, 
 	}
 }
 
-/** Process the response to our EAP-Request/AKA-Challenge
+/** AKA-CHALLENGE state - Continue the state machine after receiving a response to our EAP-Request/SIM-Challenge
  *
  */
 static rlm_rcode_t aka_challenge(void *instance, UNUSED void *thread, REQUEST *request)
@@ -3544,7 +3521,7 @@ static rlm_rcode_t aka_challenge(void *instance, UNUSED void *thread, REQUEST *r
 	}
 }
 
-/** Process the response to our EAP-Request/SIM-Challenge
+/** SIM-CHALLENGE state - Continue the state machine after receiving a response to our EAP-Request/SIM-Challenge
  *
  */
 static rlm_rcode_t sim_challenge(void *instance, UNUSED void *thread, REQUEST *request)
@@ -3601,7 +3578,7 @@ static rlm_rcode_t sim_challenge(void *instance, UNUSED void *thread, REQUEST *r
 	}
 }
 
-/** Process to response to our EAP-Request/AKA-Identity message
+/** AKA-IDENTITY state - Continue the state machine after receiving a response to our EAP-Request/AKA-Identity
  *
  * Usually this will be an EAP-Response/Identity containing AT_IDENTITY.
  */
@@ -3610,7 +3587,8 @@ static rlm_rcode_t aka_identity(void *instance, UNUSED void *thread, REQUEST *re
 	rlm_rcode_t			rcode;
 	eap_aka_sim_state_conf_t	*inst = talloc_get_type_abort(instance, eap_aka_sim_state_conf_t);
 	eap_session_t			*eap_session = eap_session_get(request->parent);
-
+	eap_aka_sim_session_t		*eap_aka_sim_session = talloc_get_type_abort(eap_session->opaque,
+										     eap_aka_sim_session_t);
 	VALUE_PAIR			*subtype_vp = NULL;
 	VALUE_PAIR			*from_peer;
 
@@ -3629,22 +3607,18 @@ static rlm_rcode_t aka_identity(void *instance, UNUSED void *thread, REQUEST *re
 	{
 		VALUE_PAIR	*id;
 
-		/*
-		 *	The supplicant could in theory not send
-		 *	and identity, and the user could configure
-		 *	one in policy.
-		 *
-		 *	This isn't supported by the standard, but
-		 *	who knows what arbitrary hacks vendors will
-		 *	require.
-		 */
 		id = fr_pair_find_by_da(from_peer, attr_eap_aka_sim_identity, TAG_ANY);
 		if (id) {
+			fr_aka_sim_id_type_t		type;
+
 			/*
 			 *	Add ID hint attributes to the request to help
 			 *	the user make policy decisions.
 			 */
-			id_hint_pairs_add(request, id->vp_strvalue);
+			id_hint_pairs_add(&type, NULL, request, id->vp_strvalue);
+			if (type == AKA_SIM_ID_TYPE_PERMANENT) {
+				identity_to_permanent_identity(request, id, eap_aka_sim_session->type);
+			}
 		}
 
 		return unlang_module_yield_to_section(request,
@@ -3684,7 +3658,7 @@ static rlm_rcode_t aka_identity(void *instance, UNUSED void *thread, REQUEST *re
 	}
 }
 
-/** Process to response to our EAP-Request/Start message
+/** SIM-START state - Continue the state machine after receiving a response to our EAP-Request/SIM-Start
  *
  * Usually this will be an EAP-Response/Start containing AT_IDENTITY.
  */
@@ -3693,6 +3667,8 @@ static rlm_rcode_t sim_start(void *instance, UNUSED void *thread, REQUEST *reque
 	rlm_rcode_t			rcode;
 	eap_aka_sim_state_conf_t	*inst = talloc_get_type_abort(instance, eap_aka_sim_state_conf_t);
 	eap_session_t			*eap_session = eap_session_get(request->parent);
+	eap_aka_sim_session_t		*eap_aka_sim_session = talloc_get_type_abort(eap_session->opaque,
+										     eap_aka_sim_session_t);
 
 	VALUE_PAIR			*subtype_vp = NULL;
 	VALUE_PAIR			*from_peer;
@@ -3709,22 +3685,18 @@ static rlm_rcode_t sim_start(void *instance, UNUSED void *thread, REQUEST *reque
 	{
 		VALUE_PAIR	*id;
 
-		/*
-		 *	The supplicant could in theory not send
-		 *	and identity, and the user could configure
-		 *	one in policy.
-		 *
-		 *	This isn't supported by the standard, but
-		 *	who knows what arbitrary hacks vendors will
-		 *	require.
-		 */
 		id = fr_pair_find_by_da(from_peer, attr_eap_aka_sim_identity, TAG_ANY);
 		if (id) {
+			fr_aka_sim_id_type_t		type;
+
 			/*
 			 *	Add ID hint attributes to the request to help
 			 *	the user make policy decisions.
 			 */
-			id_hint_pairs_add(request, id->vp_strvalue);
+			id_hint_pairs_add(&type, NULL, request, id->vp_strvalue);
+			if (type == AKA_SIM_ID_TYPE_PERMANENT) {
+				identity_to_permanent_identity(request, id, eap_aka_sim_session->type);
+			}
 		}
 
 		return unlang_module_yield_to_section(request,
@@ -3765,7 +3737,7 @@ static rlm_rcode_t sim_start(void *instance, UNUSED void *thread, REQUEST *reque
 }
 
 
-/** Give the user the opportunity to override defaults for requesting another identity, and the type of identity
+/** Reflect any configuration changes the user made to the session in `recv Identity-Response { ... }`
  *
  */
 static rlm_rcode_t common_eap_identity_resume(void *instance, UNUSED void *thread, REQUEST *request, UNUSED void *rctx)
@@ -3938,19 +3910,7 @@ static rlm_rcode_t common_eap_identity_resume(void *instance, UNUSED void *threa
 						      mod_signal,
 						      common_challenge_enter);
 
-	/*
-	 *	If it's a permanent ID, copy it over to
-	 *	the session state list for use in the
-	 *      store pseudonym/store session sections
-	 *	later.
-	 */
 	case FR_IDENTITY_TYPE_VALUE_PERMANENT:
-	{
-		VALUE_PAIR *vp;
-
-		vp = fr_pair_find_by_da(from_peer, attr_eap_aka_sim_identity, TAG_ANY);
-		if (vp) identity_to_permanent_identity(request, vp, eap_aka_sim_session->type);
-	}
 		/* FALL-THROUGH */
 
 	default:
@@ -3971,7 +3931,7 @@ static int _eap_aka_sim_session_free(eap_aka_sim_session_t *eap_aka_sim_session)
 	return 0;
 }
 
-/** Initiate the EAP-SIM/AKA['] session by starting the eap_aka_sim_state machine
+/** EAP-IDENTITY state - Initiate the EAP-SIM/AKA['] session by starting the eap_aka_sim_state machine
  *
  * The entry point called by EAP-SIM/EAP-AKA/EAP-AKA'
  */
@@ -3997,9 +3957,8 @@ rlm_rcode_t aka_sim_state_machine_start(void *instance, UNUSED void *thread, REQ
 	 *	the user make policy decisions.
 	 */
 	if (eap_session->identity) {
-		VALUE_PAIR *vp;
-
-		id_hint_pairs_add(request, eap_session->identity);
+		VALUE_PAIR			*vp;
+		fr_aka_sim_id_type_t		type;
 
 		/*
 		 *	Copy the EAP-Identity into and Identity
@@ -4007,6 +3966,15 @@ rlm_rcode_t aka_sim_state_machine_start(void *instance, UNUSED void *thread, REQ
 		 */
 		MEM(pair_add_request(&vp, attr_eap_aka_sim_identity) >= 0);
 		fr_pair_value_bstrncpy(vp, eap_session->identity, talloc_array_length(eap_session->identity) - 1);
+
+		/*
+		 *	Add ID hint attributes to the request to help
+		 *	the user make policy decisions.
+		 */
+		id_hint_pairs_add(&type, NULL, request, eap_session->identity);
+		if (type == AKA_SIM_ID_TYPE_PERMANENT) {
+			identity_to_permanent_identity(request, vp, eap_session->type);
+		}
 	}
 
 	/*
