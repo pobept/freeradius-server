@@ -545,7 +545,7 @@ static rlm_rcode_t eap_method_select(rlm_eap_t *inst, UNUSED void *thread, eap_s
 		 */
 		vp = fr_pair_find_by_da(eap_session->request->control, attr_eap_type, TAG_ANY);
 		if (vp) {
-			RDEBUG2("Setting method from &control:EAP-Type");
+			RDEBUG2("Using method from &control:EAP-Type");
 			next = vp->vp_uint32;
 		}
 
