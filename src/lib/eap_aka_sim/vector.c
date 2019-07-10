@@ -28,7 +28,9 @@ RCSID("$Id$")
 
 #include <freeradius-devel/eap/base.h>
 #include <freeradius-devel/eap/types.h>
+#include <freeradius-devel/sim/common.h>
 #include <freeradius-devel/sim/milenage.h>
+#include <freeradius-devel/sim/ts_34_108.h>
 #include <freeradius-devel/sim/comp128.h>
 
 #include "base.h"
@@ -100,14 +102,14 @@ static int vector_gsm_from_ki(REQUEST *request, VALUE_PAIR *vps, int idx, fr_aka
 	version_vp = fr_pair_find_by_da(vps, attr_sim_algo_version, TAG_ANY);
 	if (!version_vp) {
 		if (vector_opc_from_op(request, &opc_p, opc_buff, vps, ki_vp->vp_octets) < 0) return -1;
-		version = opc_p ? 4 : 3;
+		version = opc_p ? FR_SIM_ALGO_VERSION_VALUE_COMP128_4 : FR_SIM_ALGO_VERSION_VALUE_COMP128_3;
 	/*
-	 *	Version we explicitly specified, see if we can find the prerequisite
+	 *	Version was explicitly specified, see if we can find the prerequisite
 	 *	attributes.
 	 */
 	} else {
 		version = version_vp->vp_uint32;
-		if (version == 4) {
+		if (version == FR_SIM_ALGO_VERSION_VALUE_COMP128_4) {
 			if (vector_opc_from_op(request, &opc_p, opc_buff, vps, ki_vp->vp_octets) < 0) return -1;
 			if (!opc_p) {
 				RPEDEBUG2("No &control:%s or &control:%s found, "
@@ -123,28 +125,28 @@ static int vector_gsm_from_ki(REQUEST *request, VALUE_PAIR *vps, int idx, fr_aka
 	}
 
 	switch (version) {
-	case 1:
+	case FR_SIM_ALGO_VERSION_VALUE_COMP128_1:
 		comp128v1(keys->gsm.vector[idx].sres,
 			  keys->gsm.vector[idx].kc,
 			  ki_vp->vp_octets,
 			  keys->gsm.vector[idx].rand);
 		break;
 
-	case 2:
+	case FR_SIM_ALGO_VERSION_VALUE_COMP128_2:
 		comp128v23(keys->gsm.vector[idx].sres,
 			   keys->gsm.vector[idx].kc,
 			   ki_vp->vp_octets,
 			   keys->gsm.vector[idx].rand, true);
 		break;
 
-	case 3:
+	case FR_SIM_ALGO_VERSION_VALUE_COMP128_3:
 		comp128v23(keys->gsm.vector[idx].sres,
 			   keys->gsm.vector[idx].kc,
 			   ki_vp->vp_octets,
 			   keys->gsm.vector[idx].rand, false);
 		break;
 
-	case 4:
+	case FR_SIM_ALGO_VERSION_VALUE_COMP128_4:
 		if (milenage_gsm_generate(keys->gsm.vector[idx].sres,
 					  keys->gsm.vector[idx].kc,
 					  opc_p,
@@ -393,69 +395,109 @@ static int vector_umts_from_ki(REQUEST *request, VALUE_PAIR *vps, fr_aka_sim_key
 {
 	VALUE_PAIR	*ki_vp, *amf_vp, *sqn_vp, *version_vp;
 
-	uint64_t	sqn;
-	uint8_t		amf_buff[MILENAGE_AMF_SIZE] = { 0x00, 0x00 };
-	uint8_t 	opc_buff[MILENAGE_OPC_SIZE];
-	uint8_t	const	*opc_p;
-	uint32_t	version = 4;
+	size_t		ki_size, amf_size;
+	uint32_t	version = FR_SIM_ALGO_VERSION_VALUE_MILENAGE;
 	int		i;
 
-	ki_vp = fr_pair_find_by_da(vps, attr_sim_ki, TAG_ANY);
-	if (!ki_vp) {
-		RDEBUG3("No &control:%s found, not generating quintuplets locally", attr_sim_ki->name);
-		return 1;
-	} else if (ki_vp->vp_length != MILENAGE_KI_SIZE) {
-		REDEBUG("&control:%s has incorrect length, expected %u bytes got %zu bytes",
-			attr_sim_ki->name, MILENAGE_KI_SIZE, ki_vp->vp_length);
-		return -1;
-	}
-
-	if (vector_opc_from_op(request, &opc_p, opc_buff, vps, ki_vp->vp_octets) < 0) return -1;
-
-	amf_vp = fr_pair_find_by_da(vps, attr_sim_amf, TAG_ANY);
-	if (amf_vp) {
-		if (amf_vp->vp_length != sizeof(amf_buff)) {
-			REDEBUG("&control:%s has incorrect length, expected %u bytes got %zu bytes",
-				attr_sim_amf->name, MILENAGE_AMF_SIZE, amf_vp->vp_length);
-			return -1;
-		}
-		memcpy(amf_buff, amf_vp->vp_octets, sizeof(amf_buff));
-	}
-
-	sqn_vp = fr_pair_find_by_da(vps, attr_sim_sqn, TAG_ANY);
-	sqn = sqn_vp ? sqn_vp->vp_uint64 : 2;
-
 	/*
-	 *	We default to milenage
+	 *	Select the algorithm (default to Milenage)
 	 */
 	version_vp = fr_pair_find_by_da(vps, attr_sim_algo_version, TAG_ANY);
 	if (version_vp) version = version_vp->vp_uint32;
 
+	/*
+	 *	Get expected input sizes
+	 */
+	switch (version) {
+	case FR_SIM_ALGO_VERSION_VALUE_MILENAGE:
+		ki_size = MILENAGE_KI_SIZE;
+		amf_size = MILENAGE_AMF_SIZE;
+		break;
+
+	case FR_SIM_ALGO_VERSION_VALUE_TS_34_108_UMTS:
+		ki_size = TS_34_108_KI_SIZE;
+		amf_size = TS_34_108_AMF_SIZE;
+		break;
+
+	/*
+	 *	GSM algos
+	 */
+	case FR_SIM_ALGO_VERSION_VALUE_COMP128_1:
+	case FR_SIM_ALGO_VERSION_VALUE_COMP128_2:
+	case FR_SIM_ALGO_VERSION_VALUE_COMP128_3:
+	case FR_SIM_ALGO_VERSION_VALUE_COMP128_4:
+		REDEBUG("COMP128-* algorithms cannot generate UMTS vectors");
+		return -1;
+
+	default:
+		REDEBUG("Unknown/unsupported algorithm %i", version);
+		return -1;
+	}
+
+	/*
+	 *	Find the Ki VP and check its length
+	 */
+	ki_vp = fr_pair_find_by_da(vps, attr_sim_ki, TAG_ANY);
+	if (!ki_vp) {
+		RDEBUG3("No &control:%s found, not generating quintuplets locally", attr_sim_ki->name);
+		return 1;
+	} else if (ki_vp->vp_length != ki_size) {
+		REDEBUG("&control:%s has incorrect length, expected %zu bytes got %zu bytes",
+			attr_sim_ki->name, ki_size, ki_vp->vp_length);
+		return -1;
+	}
+
+	/*
+	 *	Find the Sequence Number VP or default to SQN = 2
+	 */
+	sqn_vp = fr_pair_find_by_da(vps, attr_sim_sqn, TAG_ANY);
+	keys->sqn = sqn_vp ? sqn_vp->vp_uint64 : 2;	/* 2 is the lowest valid SQN on our side */
+
+	/*
+	 *	Check if we have an AMF value
+	 */
+	amf_vp = fr_pair_find_by_da(vps, attr_sim_amf, TAG_ANY);
+	if (amf_vp) {
+		if (amf_vp->vp_length != amf_size) {
+			REDEBUG("&control:%s has incorrect length, expected %zu bytes got %zu bytes",
+				attr_sim_amf->name, amf_size, amf_vp->vp_length);
+			return -1;
+		}
+	}
+
+	/*
+	 *	Generate rand
+	 */
 	for (i = 0; i < AKA_SIM_VECTOR_UMTS_RAND_SIZE; i += sizeof(uint32_t)) {
 		uint32_t rand = fr_rand();
 		memcpy(&keys->umts.vector.rand[i], &rand, sizeof(rand));
 	}
 
 	switch (version) {
-	case 4:
+	case FR_SIM_ALGO_VERSION_VALUE_MILENAGE:
 	{
-		uint8_t sqn_buff[MILENAGE_SQN_SIZE];
+		uint8_t		amf_buff[MILENAGE_AMF_SIZE] = { 0x00, 0x00 };
+		uint8_t		sqn_buff[MILENAGE_SQN_SIZE];
+		uint8_t 	opc_buff[MILENAGE_OPC_SIZE];
+		uint8_t	const	*opc_p;
 
-		keys->sqn = sqn_vp ? sqn_vp->vp_uint64 : 0;
+		if (vector_opc_from_op(request, &opc_p, opc_buff, vps, ki_vp->vp_octets) < 0) return -1;
+
 		uint48_to_buff(sqn_buff, keys->sqn);
+		if (amf_vp) memcpy(amf_buff, amf_vp->vp_octets, amf_size);
 
 		RDEBUG3("Milenage inputs");
 		RINDENT();
 		/*
 		 *	Don't change colon indent, matches other messages later...
 		 */
-		RHEXDUMP_INLINE3(ki_vp->vp_octets, MILENAGE_KI_SIZE,
+		RHEXDUMP_INLINE3(ki_vp->vp_octets, ki_size,
 				 "Ki           :");
-		RHEXDUMP_INLINE3(opc_p, MILENAGE_OPC_SIZE,
+		RHEXDUMP_INLINE3(opc_p, sizeof(opc_buff),
 				 "OPc          :");
-		RHEXDUMP_INLINE3(sqn_buff, MILENAGE_SQN_SIZE,
+		RHEXDUMP_INLINE3(sqn_buff, sizeof(sqn_buff),
 				 "SQN          :");
-		RHEXDUMP_INLINE3(amf_buff, MILENAGE_AMF_SIZE,
+		RHEXDUMP_INLINE3(amf_buff, sizeof(amf_buff),
 				 "AMF          :");
 		REXDENT();
 
@@ -467,12 +509,12 @@ static int vector_umts_from_ki(REQUEST *request, VALUE_PAIR *vps, fr_aka_sim_key
 					   opc_p,
 					   amf_buff,
 					   ki_vp->vp_octets,
-					   sqn,
+					   keys->sqn,
 					   keys->umts.vector.rand) < 0) {
 			RPEDEBUG2("Failed deriving UMTS Quintuplet");
 			return -1;
 		}
-		keys->umts.vector.xres_len = 8;
+		keys->umts.vector.xres_len = MILENAGE_RES_SIZE;
 
 		/*
 		 *	Store the keys we used for possible AUTS
@@ -484,14 +526,61 @@ static int vector_umts_from_ki(REQUEST *request, VALUE_PAIR *vps, fr_aka_sim_key
 	}
 		return 0;
 
-	case 1:
-	case 2:
-	case 3:
-		REDEBUG("Only Milenage can be used to generate quintuplets");
-		return -1;
+	/*
+	 *	This is a dummy algorithm and should be used for testing
+	 *	purposes only.  It offers no security and can be trivially
+	 *	broken and the original Ki retrieved.
+	 */
+	case FR_SIM_ALGO_VERSION_VALUE_TS_34_108_UMTS:
+	{
+		uint8_t		amf_buff[TS_34_108_AMF_SIZE] = { 0x00, 0x00 };
+		uint8_t		sqn_buff[TS_34_108_SQN_SIZE];
+
+		uint48_to_buff(sqn_buff, keys->sqn);
+
+		if (amf_vp) memcpy(amf_buff, amf_vp->vp_octets, amf_size);
+
+		RDEBUG3("TS-34-108-UMTS inputs");
+		RINDENT();
+		/*
+		 *	Don't change colon indent, matches other messages later...
+		 */
+		RHEXDUMP_INLINE(L_DBG_LVL_3,
+				ki_vp->vp_octets, ki_size,
+				"Ki           :");
+		RHEXDUMP_INLINE(L_DBG_LVL_3,
+				sqn_buff, sizeof(sqn_buff),
+				"SQN          :");
+		RHEXDUMP_INLINE(L_DBG_LVL_3,
+				amf_buff, sizeof(amf_buff),
+				"AMF          :");
+		REXDENT();
+
+		if (ts_34_108_umts_generate(keys->umts.vector.autn,
+					    keys->umts.vector.ik,
+					    keys->umts.vector.ck,
+					    keys->umts.vector.ak,
+					    keys->umts.vector.xres,
+					    amf_buff,
+					    ki_vp->vp_octets,
+					    keys->sqn,
+					    keys->umts.vector.rand) < 0) {
+			RPEDEBUG2("Failed deriving UMTS Quintuplet");
+			return -1;
+		}
+		keys->umts.vector.xres_len = TS_34_108_RES_SIZE;
+
+		/*
+		 *	Store the keys we used for possible AUTS
+		 *	validation later.
+		 */
+		memcpy(keys->auc.ki, ki_vp->vp_octets, sizeof(keys->auc.ki));
+		keys->vector_src = AKA_SIM_VECTOR_SRC_KI;
+	}
+		return 0;
 
 	default:
-		REDEBUG("Unknown/unsupported algorithm %i", version);
+		rad_assert(0);
 		return -1;
 	}
 }

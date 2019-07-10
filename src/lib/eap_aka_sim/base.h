@@ -62,7 +62,6 @@ RCSIDH(sim_h, "$Id$")
 #define AKA_SIM_VECTOR_UMTS_AK_SIZE		6
 #define AKA_SIM_VECTOR_UMTS_RAND_SIZE		16
 #define AKA_SIM_VECTOR_UMTS_XRES_MAX_SIZE	16
-#define AKA_SIM_VECTOR_UMTS_RES_MAX_SIZE	16
 
 #define EAP_SIM_VERSION				1
 #define EAP_SIM_NONCE_MT_SIZE			16		//!< Length of challenge from SIM client.
@@ -116,7 +115,7 @@ typedef struct {
 	uint8_t		ik[AKA_SIM_VECTOR_UMTS_IK_SIZE];	//!< Integrity key.
 	uint8_t		ak[AKA_SIM_VECTOR_UMTS_AK_SIZE];	//!< Anonymity key.
 	uint8_t		rand[AKA_SIM_VECTOR_UMTS_RAND_SIZE];	//!< RAND challenge to the SIM.
-	uint8_t		xres[AKA_SIM_VECTOR_UMTS_RES_MAX_SIZE];	//!< Signing response.
+	uint8_t		xres[AKA_SIM_VECTOR_UMTS_XRES_MAX_SIZE];//!< Signing response.
 	size_t		xres_len;				//!< Length of res (it's variable).
 } fr_aka_sim_vector_umts_t;
 

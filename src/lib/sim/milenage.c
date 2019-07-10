@@ -23,6 +23,7 @@
 #include <freeradius-devel/tls/log.h>
 #include <freeradius-devel/util/proto.h>
 #include <openssl/evp.h>
+#include "common.h"
 #include "milenage.h"
 
 #define MILENAGE_MAC_A_SIZE	8

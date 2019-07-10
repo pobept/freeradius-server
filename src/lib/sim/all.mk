@@ -4,6 +4,7 @@ endif
 
 SOURCES	:= \
 	comp128.c \
-	milenage.c
+	milenage.c \
+	ts_34_108.c
 
 TGT_PREREQS	:= libfreeradius-util.a

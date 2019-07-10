@@ -362,10 +362,13 @@ ATTRIBUTE	SIM-AMF					1204	octets[2]	# This is just a bit field not an integer
 
 # The algorithm the SIM card uses (Milenage for UMTS, COMP128 for others)
 ATTRIBUTE	SIM-Algo-Version			1206	integer
-VALUE	SIM-Algo-Version		Comp128v1		0
-VALUE	SIM-Algo-Version		Comp128v2		1
-VALUE	SIM-Algo-Version		Comp128v3		2
-VALUE	SIM-Algo-Version		Milenage		3
+
+VALUE	SIM-Algo-Version		Comp128-1		1
+VALUE	SIM-Algo-Version		Comp128-2		2
+VALUE	SIM-Algo-Version		Comp128-3		3
+VALUE	SIM-Algo-Version		Comp128-4		4		# GSM Milenage TS.55.205
+VALUE	SIM-Algo-Version		Milenage		5		# UMTS Milenage
+VALUE	SIM-Algo-Version		TS-34-108-UMTS		7		# UMTS Test algorithm
 
 #
 #	Range:	1230-1239
