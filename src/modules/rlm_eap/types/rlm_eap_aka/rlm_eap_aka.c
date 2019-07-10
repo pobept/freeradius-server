@@ -37,7 +37,7 @@ static CONF_PARSER submodule_config[] = {
 			 .func = cf_table_parse_uint32, .uctx = fr_aka_sim_id_request_table },
 	{ FR_CONF_OFFSET("ephemeral_id_length", FR_TYPE_UINT8, eap_aka_sim_state_conf_t, ephemeral_id_length ), .dflt = "14" },	/* 14 for compatibility */
 	{ FR_CONF_OFFSET("protected_success", FR_TYPE_BOOL, eap_aka_sim_state_conf_t, protected_success ), .dflt = "no" },
-	{ FR_CONF_OFFSET("prefer_aka_prime", FR_TYPE_BOOL, eap_aka_sim_state_conf_t, send_at_bidding_prefer_prime ), .dflt = "yes" },
+	{ FR_CONF_OFFSET_IS_SET("prefer_aka_prime", FR_TYPE_BOOL, eap_aka_sim_state_conf_t, send_at_bidding_prefer_prime ), .dflt = "no" },
 	{ FR_CONF_OFFSET("virtual_server", FR_TYPE_VOID, eap_aka_sim_state_conf_t, virtual_server), .func = virtual_server_cf_parse },
 	CONF_PARSER_TERMINATOR
 };
@@ -143,11 +143,30 @@ static int mod_section_compile(eap_aka_sim_actions_t *actions, CONF_SECTION *ser
 	return 0;
 }
 
-static int mod_instantiate(void *instance, UNUSED CONF_SECTION *conf)
+static int mod_instantiate(void *instance, CONF_SECTION *conf)
 {
 	eap_aka_sim_state_conf_t	*inst = talloc_get_type_abort(instance, eap_aka_sim_state_conf_t);
 
 	if (mod_section_compile(&inst->actions, inst->virtual_server) < 0) return -1;
+
+	/*
+	 *	If the user didn't specify a bidding value
+	 *	infer whether we need to send the bidding
+	 *	attribute, by whether the EAP module has
+	 *	has the AKA-Prime module enabled.
+	 */
+	if (!inst->send_at_bidding_prefer_prime_is_set) {
+		CONF_SECTION	*parent = cf_item_to_section(cf_parent(conf));
+		CONF_PAIR	*cp = NULL;
+
+		while ((cp = cf_pair_find_next(parent, cp, "type"))) {
+			if (strcmp(cf_pair_value(cp), "aka-prime") == 0) {
+				cf_log_debug(conf, "Setting 'prefer_aka_prime = yes', as EAP-AKA-Prime is enabled");
+				inst->send_at_bidding_prefer_prime = true;
+				break;
+			}
+		}
+	}
 
 	return 0;
 }

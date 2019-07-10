@@ -168,6 +168,7 @@ typedef struct {
 									///< and EAP-Success packet.
 	bool				send_at_bidding_prefer_prime;	//!< Include the AT bidding attribute in
 									///< challenge requests.
+	bool				send_at_bidding_prefer_prime_is_set;	//!< Whether the user specified a value.
 
 	eap_aka_sim_actions_t		actions;			//!< Pre-compiled virtual server sections.
 } eap_aka_sim_state_conf_t;
