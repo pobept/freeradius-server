@@ -637,6 +637,18 @@ static rlm_rcode_t eap_method_select(rlm_eap_t *inst, UNUSED void *thread, eap_s
 	}
 
 	/*
+	 *	Add the EAP-Type we're running to the subrequest
+	 *	This is useful for when policies are shared between
+	 *      virtual server sections for multiple EAP types.
+	 */
+	{
+		VALUE_PAIR	*type_vp;
+
+		MEM(pair_add_request(&type_vp, attr_eap_type) >= 0);
+		type_vp->vp_uint32 = eap_session->type;
+	}
+
+	/*
 	 *	Yield to the subrequest, and start executing it
 	 */
 	return unlang_module_yield_to_subrequest(&eap_session->submodule_rcode, eap_session->subrequest,
