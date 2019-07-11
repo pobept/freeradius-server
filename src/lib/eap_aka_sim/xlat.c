@@ -33,8 +33,8 @@ static int aka_sim_xlat_refs = 0;
  *	%{aka_sim_id_method:&id_attr}
  */
 static ssize_t aka_sim_xlat_id_method_xlat(TALLOC_CTX *ctx, char **out, UNUSED size_t outlen,
-				  UNUSED void const *mod_inst, UNUSED void const *xlat_inst,
-				  REQUEST *request, char const *fmt)
+					   UNUSED void const *mod_inst, UNUSED void const *xlat_inst,
+					   REQUEST *request, char const *fmt)
 {
 	vp_tmpl_t			*vpt;
 	TALLOC_CTX			*our_ctx = talloc_init("aka_sim_xlat");
@@ -458,7 +458,7 @@ static ssize_t aka_sim_3gpp_pseudonym_encrypt_xlat(TALLOC_CTX *ctx, char **out, 
 	} else if ((id_len >= AKA_SIM_IMSI_MIN_LEN) && (id_len <= AKA_SIM_IMSI_MAX_LEN)) {
 		VALUE_PAIR *eap_type;
 
-		eap_type = fr_pair_find_by_da(request->control, attr_eap_type, TAG_ANY);
+		eap_type = fr_pair_find_by_da(request->packet->vps, attr_eap_type, TAG_ANY);
 		if (!eap_type) {
 			REDEBUG("SIM ID does not contain method hint, and no &control:EAP-Type found.  "
 				"Don't know what tag to prepend to encrypted identity");
