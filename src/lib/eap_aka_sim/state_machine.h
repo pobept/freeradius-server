@@ -171,7 +171,7 @@ typedef struct {
 	bool				send_at_bidding_prefer_prime_is_set;	//!< Whether the user specified a value.
 
 	eap_aka_sim_actions_t		actions;			//!< Pre-compiled virtual server sections.
-} eap_aka_sim_state_conf_t;
+} eap_aka_sim_common_conf_t;
 
 /*
  *	The main entry point

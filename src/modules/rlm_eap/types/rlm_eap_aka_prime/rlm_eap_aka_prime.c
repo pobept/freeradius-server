@@ -33,12 +33,12 @@ RCSID("$Id$")
 #include <freeradius-devel/unlang/module.h>
 
 static CONF_PARSER submodule_config[] = {
-	{ FR_CONF_OFFSET("network_name", FR_TYPE_STRING, eap_aka_sim_state_conf_t, network_name ) },
-	{ FR_CONF_OFFSET("request_identity", FR_TYPE_BOOL, eap_aka_sim_state_conf_t, request_identity ),
+	{ FR_CONF_OFFSET("network_name", FR_TYPE_STRING, eap_aka_sim_common_conf_t, network_name ) },
+	{ FR_CONF_OFFSET("request_identity", FR_TYPE_BOOL, eap_aka_sim_common_conf_t, request_identity ),
 			 .func = cf_table_parse_uint32, .uctx = fr_aka_sim_id_request_table },
-	{ FR_CONF_OFFSET("ephemeral_id_length", FR_TYPE_UINT8, eap_aka_sim_state_conf_t, ephemeral_id_length ), .dflt = "14" },	/* 14 for compatibility */
-	{ FR_CONF_OFFSET("protected_success", FR_TYPE_BOOL, eap_aka_sim_state_conf_t, protected_success ), .dflt = "no" },
-	{ FR_CONF_OFFSET("virtual_server", FR_TYPE_VOID, eap_aka_sim_state_conf_t, virtual_server), .func = virtual_server_cf_parse },
+	{ FR_CONF_OFFSET("ephemeral_id_length", FR_TYPE_UINT8, eap_aka_sim_common_conf_t, ephemeral_id_length ), .dflt = "14" },	/* 14 for compatibility */
+	{ FR_CONF_OFFSET("protected_success", FR_TYPE_BOOL, eap_aka_sim_common_conf_t, protected_success ), .dflt = "no" },
+	{ FR_CONF_OFFSET("virtual_server", FR_TYPE_VOID, eap_aka_sim_common_conf_t, virtual_server), .func = virtual_server_cf_parse },
 	CONF_PARSER_TERMINATOR
 };
 
@@ -145,7 +145,7 @@ static int mod_section_compile(eap_aka_sim_actions_t *actions, CONF_SECTION *ser
 
 static int mod_instantiate(void *instance, UNUSED CONF_SECTION *conf)
 {
-	eap_aka_sim_state_conf_t	*inst = talloc_get_type_abort(instance, eap_aka_sim_state_conf_t);
+	eap_aka_sim_common_conf_t	*inst = talloc_get_type_abort(instance, eap_aka_sim_common_conf_t);
 
 	if (mod_section_compile(&inst->actions, inst->virtual_server) < 0) return -1;
 
@@ -189,8 +189,8 @@ rlm_eap_submodule_t rlm_eap_aka_prime = {
 
 	.provides	= { FR_EAP_METHOD_AKA_PRIME },
 
-	.inst_size	= sizeof(eap_aka_sim_state_conf_t),
-	.inst_type	= "eap_aka_sim_state_conf_t",
+	.inst_size	= sizeof(eap_aka_sim_common_conf_t),
+	.inst_type	= "eap_aka_sim_common_conf_t",
 	.config		= submodule_config,
 
 	.onload		= mod_load,
