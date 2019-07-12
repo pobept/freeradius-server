@@ -99,7 +99,7 @@ FR_NAME_NUMBER const eap_tls_status_table[] = {
  * @param[in] request		The current subrequest.
  * @param[in] eap_session	to continue.
  * @param[in] status		What type of packet we're sending.
- * @param[in] flag		to set.  This is checked to determine if
+ * @param[in] flags		to set.  This is checked to determine if
  *				we need to include a length field.
  * @param[in] record 		The record buffer to read from.  This
  *				most only be set for EAP_TLS_RECORD_SEND packets.
