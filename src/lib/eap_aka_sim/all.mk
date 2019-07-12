@@ -12,5 +12,4 @@ SOURCES	:= \
 	vector.c \
 	xlat.c
 
-SRC_INCDIRS	:= . ${top_srcdir}/src/modules/rlm_eap/lib/base ${top_srcdir}/src/modules/rlm_eap/
 TGT_PREREQS	:= $(LIBFREERADIUS_SERVER) libfreeradius-eap.a libfreeradius-util.a libfreeradius-sim.a
