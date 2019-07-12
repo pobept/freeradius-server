@@ -35,6 +35,8 @@ RCSID("$Id$")
 static CONF_PARSER submodule_config[] = {
 	{ FR_CONF_OFFSET("request_identity", FR_TYPE_BOOL, eap_aka_sim_common_conf_t, request_identity ),
 			 .func = cf_table_parse_uint32, .uctx = fr_aka_sim_id_request_table },
+	{ FR_CONF_OFFSET("strip_permanent_identity_hint", FR_TYPE_BOOL, eap_aka_sim_common_conf_t,
+			 strip_permanent_identity_hint ), .dflt = "yes" },
 	{ FR_CONF_OFFSET("ephemeral_id_length", FR_TYPE_UINT8, eap_aka_sim_common_conf_t, ephemeral_id_length ), .dflt = "14" },	/* 14 for compatibility */
 	{ FR_CONF_OFFSET("protected_success", FR_TYPE_BOOL, eap_aka_sim_common_conf_t, protected_success ), .dflt = "no" },
 	{ FR_CONF_OFFSET_IS_SET("prefer_aka_prime", FR_TYPE_BOOL, eap_aka_sim_common_conf_t, send_at_bidding_prefer_prime ), .dflt = "no" },

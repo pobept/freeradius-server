@@ -170,6 +170,9 @@ typedef struct {
 									///< challenge requests.
 	bool				send_at_bidding_prefer_prime_is_set;	//!< Whether the user specified a value.
 
+	bool				strip_permanent_identity_hint;	//!< Control whether the hint byte is stripped
+									///< when populating Permanent-Identity.
+
 	eap_aka_sim_actions_t		actions;			//!< Pre-compiled virtual server sections.
 } eap_aka_sim_common_conf_t;
 

@@ -3725,7 +3725,9 @@ static rlm_rcode_t aka_identity(void *instance, UNUSED void *thread, REQUEST *re
 			 */
 			id_hint_pairs_add(&type, NULL, request, id->vp_strvalue);
 			if (type == AKA_SIM_ID_TYPE_PERMANENT) {
-				identity_to_permanent_identity(request, id, eap_aka_sim_session->type, false);
+				identity_to_permanent_identity(request, id,
+							       eap_aka_sim_session->type,
+							       inst->strip_permanent_identity_hint);
 			}
 		}
 
@@ -3812,7 +3814,9 @@ static rlm_rcode_t sim_start(void *instance, UNUSED void *thread, REQUEST *reque
 			 */
 			id_hint_pairs_add(&type, NULL, request, id->vp_strvalue);
 			if (type == AKA_SIM_ID_TYPE_PERMANENT) {
-				identity_to_permanent_identity(request, id, eap_aka_sim_session->type, false);
+				identity_to_permanent_identity(request, id,
+							       eap_aka_sim_session->type,
+							       inst->strip_permanent_identity_hint);
 			}
 		}
 
@@ -4097,7 +4101,8 @@ rlm_rcode_t aka_sim_state_machine_start(void *instance, UNUSED void *thread, REQ
 		 */
 		id_hint_pairs_add(&type, NULL, request, eap_session->identity);
 		if (type == AKA_SIM_ID_TYPE_PERMANENT) {
-			identity_to_permanent_identity(request, vp, eap_session->type, false);
+			identity_to_permanent_identity(request, vp, eap_session->type,
+						       inst->strip_permanent_identity_hint);
 		}
 	}
 
