@@ -29,8 +29,6 @@
  */
 RCSID("$Id$")
 
-#include "event.h"
-
 #include <freeradius-devel/util/dlist.h>
 #include <freeradius-devel/util/event.h>
 #include <freeradius-devel/util/heap.h>
@@ -39,8 +37,8 @@ RCSID("$Id$")
 #include <freeradius-devel/util/strerror.h>
 #include <freeradius-devel/util/syserror.h>
 #include <freeradius-devel/util/talloc.h>
-#include <freeradius-devel/util/token.h>
 #include <freeradius-devel/util/time.h>
+#include <freeradius-devel/util/token.h>
 #include <sys/stat.h>
 
 #define FR_EV_BATCH_FDS (256)

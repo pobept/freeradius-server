@@ -22,7 +22,7 @@
  */
 RCSID("$Id$")
 
-#include "dict.h"
+#include <freeradius-devel/util/dict.h>
 
 #include <freeradius-devel/radius/defs.h>
 #include <freeradius-devel/util/conf.h>

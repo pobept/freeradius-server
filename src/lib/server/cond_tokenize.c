@@ -29,10 +29,7 @@ RCSID("$Id$")
 #include <freeradius-devel/server/cond.h>
 #include <freeradius-devel/server/rad_assert.h>
 
-
-
 #include <ctype.h>
-
 
 static const FR_NAME_NUMBER allowed_return_codes[] = {
 	{ "reject",     1 },

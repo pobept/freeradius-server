@@ -676,7 +676,7 @@ static rlm_rcode_t session_and_pseudonym_store(eap_aka_sim_common_conf_t *inst,
 						      RLM_MODULE_NOOP,
 						      pseudonym_store_resume,
 						      mod_signal,
-						      state_enter);
+						      (void *)state_enter);
 	}
 
 	return pseudonym_store_resume(inst, module_thread_by_data(inst), request, (void *)state_enter);
@@ -1924,7 +1924,7 @@ static rlm_rcode_t common_success_notification_enter(eap_aka_sim_common_conf_t *
 /** Resume after 'send Reauthentication-Request { ... }'
  *
  */
-static rlm_rcode_t common_reauthentication_send_resume(UNUSED void *instance, UNUSED void *thread,
+static rlm_rcode_t common_reauthentication_send_resume(void *instance, UNUSED void *thread,
 				 		       REQUEST *request, UNUSED void *rctx)
 {
 	eap_aka_sim_common_conf_t	*inst = talloc_get_type_abort(instance, eap_aka_sim_common_conf_t);
@@ -2828,7 +2828,7 @@ static rlm_rcode_t aka_identity_response_process(eap_aka_sim_common_conf_t *inst
 						      RLM_MODULE_NOOP,
 						      pseudonym_load_resume,
 						      mod_signal,
-						      aka_challenge_enter);
+						      (void *)aka_challenge_enter);
 	default:
 		break;
 	}
@@ -3049,7 +3049,7 @@ static rlm_rcode_t sim_start_response_process(eap_aka_sim_common_conf_t *inst,
 						      RLM_MODULE_NOOP,
 						      pseudonym_load_resume,
 						      mod_signal,
-						      sim_challenge_enter);
+						      (void *)sim_challenge_enter);
 
 	/*
 	 *	If it's a permanent ID, copy it over to
@@ -4035,7 +4035,7 @@ static rlm_rcode_t common_eap_identity_resume(void *instance, UNUSED void *threa
 						      RLM_MODULE_NOOP,
 						      pseudonym_load_resume,
 						      mod_signal,
-						      common_challenge_enter);
+						      (void *)common_challenge_enter);
 
 	case FR_IDENTITY_TYPE_VALUE_PERMANENT:
 		/* FALL-THROUGH */

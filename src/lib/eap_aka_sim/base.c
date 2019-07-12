@@ -29,13 +29,16 @@ RCSID("$Id$")
 
 #include <freeradius-devel/util/base.h>
 #include <freeradius-devel/util/sha1.h>
+
 #include <freeradius-devel/server/rad_assert.h>
 #include <freeradius-devel/server/module.h>
+
 #include <freeradius-devel/tls/base.h>
 
 #include <freeradius-devel/eap/types.h>
-#include "base.h"
-#include "attrs.h"
+
+#include <freeradius-devel/eap_aka_sim/base.h>
+#include <freeradius-devel/eap_aka_sim/attrs.h>
 
 static int instance_count = 0;
 

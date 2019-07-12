@@ -25,15 +25,13 @@
  */
 RCSID("$Id$")
 
-
+#include <freeradius-devel/server/dl_module.h>
 #include <freeradius-devel/server/log.h>
 #include <freeradius-devel/server/rad_assert.h>
 
 #include <freeradius-devel/util/cursor.h>
 #include <freeradius-devel/util/dl.h>
 #include <freeradius-devel/util/syserror.h>
-
-#include "dl_module.h"
 
 #include <ctype.h>
 #include <unistd.h>
@@ -584,7 +582,7 @@ dl_loader_t *dl_loader_from_module_loader(dl_module_loader_t *dl_module_l)
  */
 dl_module_loader_t *dl_module_loader_init(char const *lib_dir)
 {
-	if (dl_module_loader) {		
+	if (dl_module_loader) {
 		/*
 		 *	Allow it to update the search path.
 		 */

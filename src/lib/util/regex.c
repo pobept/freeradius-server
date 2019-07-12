@@ -24,12 +24,12 @@
 RCSID("$Id$")
 
 #ifdef HAVE_REGEX
-#include "regex.h"
 
+#include <freeradius-devel/util/regex.h>
 #include <freeradius-devel/util/strerror.h>
+#include <freeradius-devel/util/talloc.h>
 #include <freeradius-devel/util/thread_local.h>
 #include <freeradius-devel/util/token.h>
-#include <freeradius-devel/util/talloc.h>
 
 /*
  *######################################

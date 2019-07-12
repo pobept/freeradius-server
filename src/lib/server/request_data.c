@@ -25,7 +25,7 @@
 RCSID("$Id$")
 
 #include <freeradius-devel/server/rad_assert.h>
-#include "request_data.h"
+#include <freeradius-devel/server/request_data.h>
 
 /** Per-request opaque data, added by modules
  *
