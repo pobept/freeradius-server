@@ -85,20 +85,23 @@ server eap-aka-sim {
 	#
 	#  The following request attributes are available::
 	#
-	#  - `Identity`		the identity value received in the
-	#  			EAP-Identity-Response.
+	#  - `Identity`			the identity value received in the
+	#  				EAP-Identity-Response.
+	#  - `Permanent-Identity`	If the hint byte at the start of the
+	#				identity string indicated it was
+	#				permanent.
 	#
-	#  - `Identity-Type`	The type of identity the 'hint' byte
-	#			at the start of the identity indicates.
-	#			- `Permanent`
-	#			- `Pseudonym`
-	#			- `Fastauath`
+	#  - `Identity-Type`		The type of identity the 'hint' byte
+	#				at the start of the identity indicates.
+	#				- `Permanent`
+	#				- `Pseudonym`
+	#				- `Fastauath`
 	#
-	#  - `Method-Hint`	The EAP-Method the 'hint' byte
-	#			at the start of the identity indicates::
-	#			- `AKA-Prime`
-	#			- `AKA`
-	#			- `SIM`
+	#  - `Method-Hint`		The EAP-Method the 'hint' byte
+	#				at the start of the identity indicates::
+	#				- `AKA-Prime`
+	#				- `AKA`
+	#				- `SIM`
 	#
 	#  At the end of this section the value of `&Identity-Type` will be
 	#  checked to see if any additional identity processing steps are
