@@ -545,13 +545,13 @@ static int vector_umts_from_ki(REQUEST *request, VALUE_PAIR *vps, fr_aka_sim_key
 		/*
 		 *	Don't change colon indent, matches other messages later...
 		 */
-		RHEXDUMP_INLINE(L_DBG_LVL_3,
+		RHEXDUMP_INLINE3(
 				ki_vp->vp_octets, ki_size,
 				"Ki           :");
-		RHEXDUMP_INLINE(L_DBG_LVL_3,
+		RHEXDUMP_INLINE3(
 				sqn_buff, sizeof(sqn_buff),
 				"SQN          :");
-		RHEXDUMP_INLINE(L_DBG_LVL_3,
+		RHEXDUMP_INLINE3(
 				amf_buff, sizeof(amf_buff),
 				"AMF          :");
 		REXDENT();

@@ -2441,8 +2441,8 @@ static rlm_rcode_t common_reauthentication_response_process(eap_aka_sim_common_c
 		RDEBUG2("Received MAC matches calculated MAC");
 	} else {
 		REDEBUG("Received MAC does not match calculated MAC");
-		RHEXDUMP_INLINE(L_DBG_LVL_2, mac->vp_octets, AKA_SIM_MAC_DIGEST_SIZE, "Received");
-		RHEXDUMP_INLINE(L_DBG_LVL_2, calc_mac, AKA_SIM_MAC_DIGEST_SIZE, "Expected");
+		RHEXDUMP_INLINE2(mac->vp_octets, AKA_SIM_MAC_DIGEST_SIZE, "Received");
+		RHEXDUMP_INLINE2(calc_mac, AKA_SIM_MAC_DIGEST_SIZE, "Expected");
 		goto failure;
 	}
 
@@ -2464,8 +2464,8 @@ static rlm_rcode_t common_reauthentication_response_process(eap_aka_sim_common_c
 			RDEBUG2("Received checkcode matches calculated checkcode");
 		} else {
 			REDEBUG("Received checkcode does not match calculated checkcode");
-			RHEXDUMP_INLINE(L_DBG_LVL_2, checkcode->vp_octets, checkcode->vp_length, "Received");
-			RHEXDUMP_INLINE(L_DBG_LVL_2, eap_aka_sim_session->checkcode,
+			RHEXDUMP_INLINE2(checkcode->vp_octets, checkcode->vp_length, "Received");
+			RHEXDUMP_INLINE2(eap_aka_sim_session->checkcode,
 					eap_aka_sim_session->checkcode_len, "Expected");
 			goto failure;
 		}
@@ -2558,8 +2558,8 @@ static rlm_rcode_t aka_challenge_response_process(eap_aka_sim_common_conf_t *ins
 		RDEBUG2("Received MAC matches calculated MAC");
 	} else {
 		REDEBUG("Received MAC does not match calculated MAC");
-		RHEXDUMP_INLINE(L_DBG_LVL_2, mac->vp_octets, AKA_SIM_MAC_DIGEST_SIZE, "Received");
-		RHEXDUMP_INLINE(L_DBG_LVL_2, calc_mac, AKA_SIM_MAC_DIGEST_SIZE, "Expected");
+		RHEXDUMP_INLINE2(mac->vp_octets, AKA_SIM_MAC_DIGEST_SIZE, "Received");
+		RHEXDUMP_INLINE2(calc_mac, AKA_SIM_MAC_DIGEST_SIZE, "Expected");
 		goto failure;
 	}
 
@@ -2583,8 +2583,8 @@ static rlm_rcode_t aka_challenge_response_process(eap_aka_sim_common_conf_t *ins
 				RDEBUG2("Received checkcode matches calculated checkcode");
 			} else {
 				REDEBUG("Received checkcode does not match calculated checkcode");
-				RHEXDUMP_INLINE(L_DBG_LVL_2, checkcode->vp_octets, checkcode->vp_length, "Received");
-				RHEXDUMP_INLINE(L_DBG_LVL_2, eap_aka_sim_session->checkcode,
+				RHEXDUMP_INLINE2(checkcode->vp_octets, checkcode->vp_length, "Received");
+				RHEXDUMP_INLINE2(eap_aka_sim_session->checkcode,
 						eap_aka_sim_session->checkcode_len, "Expected");
 				goto failure;
 			}
@@ -2610,8 +2610,8 @@ static rlm_rcode_t aka_challenge_response_process(eap_aka_sim_common_conf_t *ins
 
   	if (memcmp(vp->vp_octets, eap_aka_sim_session->keys.umts.vector.xres, vp->vp_length)) {
     		REDEBUG("Received RES does not match calculated XRES");
-		RHEXDUMP_INLINE(L_DBG_LVL_2, vp->vp_octets, vp->vp_length, "RES  :");
-		RHEXDUMP_INLINE(L_DBG_LVL_2, eap_aka_sim_session->keys.umts.vector.xres,
+		RHEXDUMP_INLINE2(vp->vp_octets, vp->vp_length, "RES  :");
+		RHEXDUMP_INLINE2(eap_aka_sim_session->keys.umts.vector.xres,
 				eap_aka_sim_session->keys.umts.vector.xres_len, "XRES :");
 		goto failure;
 	}
@@ -2693,8 +2693,8 @@ static rlm_rcode_t sim_challenge_response_process(eap_aka_sim_common_conf_t *ins
 		RDEBUG2("Received MAC matches calculated MAC");
 	} else {
 		REDEBUG("Received MAC does not match calculated MAC");
-		RHEXDUMP_INLINE(L_DBG_LVL_2, mac->vp_octets, AKA_SIM_MAC_DIGEST_SIZE, "Received");
-		RHEXDUMP_INLINE(L_DBG_LVL_2, calc_mac, AKA_SIM_MAC_DIGEST_SIZE, "Expected");
+		RHEXDUMP_INLINE2(mac->vp_octets, AKA_SIM_MAC_DIGEST_SIZE, "Received");
+		RHEXDUMP_INLINE2(calc_mac, AKA_SIM_MAC_DIGEST_SIZE, "Expected");
 		goto failure;
 	}
 

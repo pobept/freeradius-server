@@ -1189,20 +1189,20 @@ void fr_aka_sim_crypto_keys_log(REQUEST *request, fr_aka_sim_keys_t *keys)
 		break;
 
 	case AKA_SIM_VECTOR_UMTS_REAUTH_KDF_0_REAUTH:
-		RHEXDUMP_INLINE(L_DBG_LVL_3, keys->mk, sizeof(keys->mk),
+		RHEXDUMP_INLINE3(keys->mk, sizeof(keys->mk),
 				"MK           :");
 		RDEBUG3(
 				"counter      : %u", keys->reauth.counter);
-		RHEXDUMP_INLINE(L_DBG_LVL_3, keys->reauth.nonce_s, sizeof(keys->reauth.nonce_s),
+		RHEXDUMP_INLINE3(keys->reauth.nonce_s, sizeof(keys->reauth.nonce_s),
 				"nonce_s      :");
 		break;
 
 	case AKA_SIM_VECTOR_UMTS_REAUTH_KDF_1_REAUTH:
-		RHEXDUMP_INLINE(L_DBG_LVL_3, keys->k_re, sizeof(keys->k_re),
+		RHEXDUMP_INLINE3(keys->k_re, sizeof(keys->k_re),
 				"k_re         :");
 		RDEBUG3(
 				"counter      : %u", keys->reauth.counter);
-		RHEXDUMP_INLINE(L_DBG_LVL_3, keys->reauth.nonce_s, sizeof(keys->reauth.nonce_s),
+		RHEXDUMP_INLINE3(keys->reauth.nonce_s, sizeof(keys->reauth.nonce_s),
 				"nonce_s      :");
 		break;
 
@@ -1215,7 +1215,7 @@ void fr_aka_sim_crypto_keys_log(REQUEST *request, fr_aka_sim_keys_t *keys)
 	RINDENT();
 	switch (keys->vector_type) {
 	case AKA_SIM_VECTOR_UMTS_REAUTH_KDF_0_REAUTH:
-		RHEXDUMP_INLINE(L_DBG_LVL_3, keys->reauth.xkey_prime, sizeof(keys->reauth.xkey_prime),
+		RHEXDUMP_INLINE3(keys->reauth.xkey_prime, sizeof(keys->reauth.xkey_prime),
 				"XKEY'        :");
 		break;
 
