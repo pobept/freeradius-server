@@ -196,8 +196,8 @@ static bool identity_req_set_by_user(REQUEST *request, eap_aka_sim_session_t *ea
 /** Based on the hint byte in the identity, add &Identity-Type and &Method-Hint attributes
  *
  */
-static void id_hint_pairs_add(fr_aka_sim_id_type_t *type_p, fr_aka_sim_method_hint_t *method_p,
-			      REQUEST *request, char const *identity)
+static void identity_hint_pairs_add(fr_aka_sim_id_type_t *type_p, fr_aka_sim_method_hint_t *method_p,
+				    REQUEST *request, char const *identity)
 {
 	fr_aka_sim_id_type_t		type;
 	fr_aka_sim_method_hint_t	method;
@@ -293,7 +293,7 @@ static void client_error_debug(REQUEST *request, VALUE_PAIR *from_peer)
  *	- 0 on success.
  *	- -1 on failure (progression of identities was not valid).
  */
-static int id_req_pairs_add(REQUEST *request, eap_aka_sim_session_t *eap_aka_sim_session)
+static int identity_req_pairs_add(REQUEST *request, eap_aka_sim_session_t *eap_aka_sim_session)
 {
 	VALUE_PAIR *vp;
 
@@ -1291,7 +1291,8 @@ static rlm_rcode_t aka_challenge_request_compose(eap_aka_sim_common_conf_t *inst
 		if (vp) {
 			talloc_free(eap_aka_sim_session->keys.network);
 			eap_aka_sim_session->keys.network = talloc_memdup(eap_aka_sim_session,
-								      (uint8_t const *)vp->vp_strvalue, vp->vp_length);
+									  (uint8_t const *)vp->vp_strvalue,
+									  vp->vp_length);
 			eap_aka_sim_session->keys.network_len = vp->vp_length;
 		} else {
 			REDEBUG("No network name available, can't set AT_KDF_INPUT");
@@ -1569,7 +1570,7 @@ static rlm_rcode_t aka_identity_request_send(eap_aka_sim_common_conf_t *inst,
 	 *	The internal state machine should always handle this
 	 *	correctly, but the user may have other ideas...
 	 */
-	if (id_req_pairs_add(request, eap_aka_sim_session) < 0) {
+	if (identity_req_pairs_add(request, eap_aka_sim_session) < 0) {
 	failure:
 		return common_failure_notification_enter(inst, request, eap_session);
 	}
@@ -1683,7 +1684,7 @@ static rlm_rcode_t sim_start_request_send(eap_aka_sim_common_conf_t *inst,
 	 *	The internal state machine should always handle this
 	 *	correctly, but the user may have other ideas...
 	 */
-	if (id_req_pairs_add(request, eap_aka_sim_session) < 0) {
+	if (identity_req_pairs_add(request, eap_aka_sim_session) < 0) {
 	failure:
 		return common_failure_notification_enter(inst, request, eap_session);
 	}
@@ -2466,7 +2467,7 @@ static rlm_rcode_t common_reauthentication_response_process(eap_aka_sim_common_c
 			REDEBUG("Received checkcode does not match calculated checkcode");
 			RHEXDUMP_INLINE2(checkcode->vp_octets, checkcode->vp_length, "Received");
 			RHEXDUMP_INLINE2(eap_aka_sim_session->checkcode,
-					eap_aka_sim_session->checkcode_len, "Expected");
+					 eap_aka_sim_session->checkcode_len, "Expected");
 			goto failure;
 		}
 	/*
@@ -3723,7 +3724,7 @@ static rlm_rcode_t aka_identity(void *instance, UNUSED void *thread, REQUEST *re
 			 *	Add ID hint attributes to the request to help
 			 *	the user make policy decisions.
 			 */
-			id_hint_pairs_add(&type, NULL, request, id->vp_strvalue);
+			identity_hint_pairs_add(&type, NULL, request, id->vp_strvalue);
 			if (type == AKA_SIM_ID_TYPE_PERMANENT) {
 				identity_to_permanent_identity(request, id,
 							       eap_aka_sim_session->type,
@@ -3812,7 +3813,7 @@ static rlm_rcode_t sim_start(void *instance, UNUSED void *thread, REQUEST *reque
 			 *	Add ID hint attributes to the request to help
 			 *	the user make policy decisions.
 			 */
-			id_hint_pairs_add(&type, NULL, request, id->vp_strvalue);
+			identity_hint_pairs_add(&type, NULL, request, id->vp_strvalue);
 			if (type == AKA_SIM_ID_TYPE_PERMANENT) {
 				identity_to_permanent_identity(request, id,
 							       eap_aka_sim_session->type,
@@ -3929,7 +3930,6 @@ static rlm_rcode_t common_eap_identity_resume(void *instance, UNUSED void *threa
 		break;
 
 	case FR_EAP_METHOD_AKA_PRIME:
-
 		RDEBUG2("New EAP-AKA' session");
 
 		running = AKA_SIM_METHOD_HINT_AKA_PRIME;
@@ -4011,6 +4011,7 @@ static rlm_rcode_t common_eap_identity_resume(void *instance, UNUSED void *threa
 	 *	from AT_IDENTITY, OR the value from the
 	 *	EAP-Identity-Response.
 	 */
+	rad_assert(!eap_aka_sim_session->keys.identity && (eap_aka_sim_session->keys.identity_len == 0));
 	eap_aka_sim_session->keys.identity_len = talloc_array_length(eap_session->identity) - 1;
 	MEM(eap_aka_sim_session->keys.identity = talloc_memdup(eap_aka_sim_session, eap_session->identity,
 							       eap_aka_sim_session->keys.identity_len));
@@ -4099,7 +4100,7 @@ rlm_rcode_t aka_sim_state_machine_start(void *instance, UNUSED void *thread, REQ
 		 *	Add ID hint attributes to the request to help
 		 *	the user make policy decisions.
 		 */
-		id_hint_pairs_add(&type, NULL, request, eap_session->identity);
+		identity_hint_pairs_add(&type, NULL, request, eap_session->identity);
 		if (type == AKA_SIM_ID_TYPE_PERMANENT) {
 			identity_to_permanent_identity(request, vp, eap_session->type,
 						       inst->strip_permanent_identity_hint);
