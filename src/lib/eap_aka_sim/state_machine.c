@@ -271,7 +271,7 @@ static void identity_hint_pairs_add(fr_aka_sim_id_type_t *type_p, fr_aka_sim_met
 /** Print out the error the client returned
  *
  */
-static void client_error_debug(REQUEST *request, VALUE_PAIR *from_peer)
+static inline void client_error_debug(REQUEST *request, VALUE_PAIR *from_peer)
 {
 	VALUE_PAIR *vp;
 
@@ -346,8 +346,8 @@ static int identity_req_pairs_add(REQUEST *request, eap_aka_sim_session_t *eap_a
 /** Copy the incoming identity to the permanent identity attribute
  *
  * If the incoming ID really looks like a permanent ID, and we were
- * told it was a permanent ID, then trim the first byte to form the
- * real permanent ID.
+ * told it was a permanent ID, then (optionally) trim the first byte
+ * to form the real permanent ID.
  *
  * Otherwise copy the entire incoming Identity to the
  * &session-state:Permanent-Identity attribute.
@@ -440,6 +440,19 @@ static int identity_to_permanent_identity(REQUEST *request, VALUE_PAIR *in, eap_
 	}
 
 	return 0;
+}
+
+/** Set the crypto identity from a received identity
+ *
+ */
+static void identity_to_crypto_identity(REQUEST *request, eap_aka_sim_session_t *eap_aka_sim_session,
+					uint8_t const *identity, size_t len)
+{
+	RDEBUG3("Setting cryptographic identity to \"%pV\"", fr_box_strvalue_len((char const *)identity, len));
+
+	talloc_free(eap_aka_sim_session->keys.identity);
+	eap_aka_sim_session->keys.identity_len = len;
+	MEM(eap_aka_sim_session->keys.identity = talloc_memdup(eap_aka_sim_session, identity, len));
 }
 
 /** Determine if we're after authentication
@@ -2736,7 +2749,7 @@ static rlm_rcode_t aka_identity_response_process(eap_aka_sim_common_conf_t *inst
 	eap_aka_sim_session_t	*eap_aka_sim_session = talloc_get_type_abort(eap_session->opaque,
 									     eap_aka_sim_session_t);
 	bool			user_set_id_req;
-	VALUE_PAIR		*id, *identity_type;
+	VALUE_PAIR		*identity_type;
 	VALUE_PAIR		*from_peer = request->packet->vps;
 	/*
 	 *	Digest the identity response
@@ -2749,30 +2762,6 @@ static rlm_rcode_t aka_identity_response_process(eap_aka_sim_common_conf_t *inst
 			return common_failure_notification_enter(inst, request, eap_session);
 		}
 	}
-
-	/*
-	 *	See if we got an AT_IDENTITY
-	 */
-	id = fr_pair_find_by_da(from_peer, attr_eap_aka_sim_identity, TAG_ANY);
-	if (!id) {
-		/*
-		 *  9.2.  EAP-Response/Identity
-		 *
-   		 *  The peer sends EAP-Response/Identity in response to a valid
-		 *  EAP-Request/Identity from the server.
-		 *  The peer MUST include the AT_IDENTITY attribute.  The usage of
-		 *  AT_IDENTITY is defined in Section 4.1.
-		 */
-		REDEBUG("EAP-Response/Identity does not contain AT_IDENTITY");
-		goto failure;
-	}
-
-	/*
-	 *	Update cryptographic identity
-	 */
-	talloc_free(eap_aka_sim_session->keys.identity);
-	eap_aka_sim_session->keys.identity_len = id->vp_length;
-	MEM(eap_aka_sim_session->keys.identity = talloc_memdup(eap_aka_sim_session, id->vp_strvalue, id->vp_length));
 
 	/*
 	 *	See if the user wants us to request another
@@ -2938,36 +2927,10 @@ static rlm_rcode_t sim_start_response_process(eap_aka_sim_common_conf_t *inst,
 {
 	eap_aka_sim_session_t	*eap_aka_sim_session = talloc_get_type_abort(eap_session->opaque,
 									     eap_aka_sim_session_t);
-	VALUE_PAIR		*id;
 	bool			user_set_id_req;
 	VALUE_PAIR		*identity_type;
 
 	VALUE_PAIR		*from_peer = request->packet->vps;
-
-	/*
-	 *	See if we got an AT_IDENTITY
-	 */
-	id = fr_pair_find_by_da(from_peer, attr_eap_aka_sim_identity, TAG_ANY);
-	if (!id) {
-		/*
-		 *  RFC 4186 Section #9.2
-		 *
-   		 *  The peer sends EAP-Response/SIM/Start in response to a valid
-		 *  EAP-Request/SIM/Start from the server.
-		 *  The peer MUST include the AT_IDENTITY attribute.  The usage of
-		 *  AT_IDENTITY is defined in Section 4.1.
-		 */
-		 REDEBUG("EAP-Response/SIM/Start does not contain AT_IDENTITY");
-	failure:
-		return common_failure_notification_enter(inst, request, eap_session);
-	}
-
-	/*
-	 *	Update cryptographic identity
-	 */
-	talloc_free(eap_aka_sim_session->keys.identity);
-	eap_aka_sim_session->keys.identity_len = id->vp_length;
-	MEM(eap_aka_sim_session->keys.identity = talloc_memdup(eap_aka_sim_session, id->vp_strvalue, id->vp_length));
 
 	/*
 	 *	See if the user wants us to request another
@@ -2994,7 +2957,8 @@ static rlm_rcode_t sim_start_response_process(eap_aka_sim_common_conf_t *inst,
 
 			case AKA_SIM_PERMANENT_ID_REQ:
 				REDEBUG("Peer sent no usable identities");
-				goto failure;
+			failure:
+				return common_failure_notification_enter(inst, request, eap_session);
 			}
 			RDEBUG2("Previous section returned (%s), requesting next most permissive identity (%s)",
 				fr_int2str(rcode_table, request->rcode, "<INVALID>"),
@@ -3714,23 +3678,39 @@ static rlm_rcode_t aka_identity(void *instance, UNUSED void *thread, REQUEST *re
 	 */
 	case FR_SUBTYPE_VALUE_AKA_IDENTITY:
 	{
-		VALUE_PAIR	*id;
+		VALUE_PAIR		*id;
+		fr_aka_sim_id_type_t	type;
 
 		id = fr_pair_find_by_da(from_peer, attr_eap_aka_sim_identity, TAG_ANY);
-		if (id) {
-			fr_aka_sim_id_type_t		type;
-
+		if (!id) {
 			/*
-			 *	Add ID hint attributes to the request to help
-			 *	the user make policy decisions.
+			 *  9.2.  EAP-Response/Identity
+			 *
+			 *  The peer sends EAP-Response/Identity in response to a valid
+			 *  EAP-Request/Identity from the server.
+			 *  The peer MUST include the AT_IDENTITY attribute.  The usage of
+			 *  AT_IDENTITY is defined in Section 4.1.
 			 */
-			identity_hint_pairs_add(&type, NULL, request, id->vp_strvalue);
-			if (type == AKA_SIM_ID_TYPE_PERMANENT) {
-				identity_to_permanent_identity(request, id,
-							       eap_aka_sim_session->type,
-							       inst->strip_permanent_identity_hint);
-			}
+			REDEBUG("EAP-Response/Identity does not contain AT_IDENTITY");
+			return common_failure_notification_enter(inst, request, eap_session);
 		}
+
+		/*
+		 *	Add ID hint attributes to the request to help
+		 *	the user make policy decisions.
+		 */
+		identity_hint_pairs_add(&type, NULL, request, id->vp_strvalue);
+		if (type == AKA_SIM_ID_TYPE_PERMANENT) {
+			identity_to_permanent_identity(request, id,
+						       eap_aka_sim_session->type,
+						       inst->strip_permanent_identity_hint);
+		}
+
+		/*
+		 *	Update cryptographic identity
+		 */
+		identity_to_crypto_identity(request, eap_aka_sim_session,
+					    (uint8_t const *)id->vp_strvalue, id->vp_length);
 
 		return unlang_module_yield_to_section(request,
 						      inst->actions.aka.recv_aka_identity_response?
@@ -3803,23 +3783,39 @@ static rlm_rcode_t sim_start(void *instance, UNUSED void *thread, REQUEST *reque
 	switch (subtype_vp->vp_uint16) {
 	case FR_SUBTYPE_VALUE_SIM_START:
 	{
-		VALUE_PAIR	*id;
+		VALUE_PAIR		*id;
+		fr_aka_sim_id_type_t	type;
 
 		id = fr_pair_find_by_da(from_peer, attr_eap_aka_sim_identity, TAG_ANY);
-		if (id) {
-			fr_aka_sim_id_type_t		type;
-
+		if (!id) {
 			/*
-			 *	Add ID hint attributes to the request to help
-			 *	the user make policy decisions.
+			 *  RFC 4186 Section #9.2
+			 *
+			 *  The peer sends EAP-Response/SIM/Start in response to a valid
+			 *  EAP-Request/SIM/Start from the server.
+			 *  The peer MUST include the AT_IDENTITY attribute.  The usage of
+			 *  AT_IDENTITY is defined in Section 4.1.
 			 */
-			identity_hint_pairs_add(&type, NULL, request, id->vp_strvalue);
-			if (type == AKA_SIM_ID_TYPE_PERMANENT) {
-				identity_to_permanent_identity(request, id,
-							       eap_aka_sim_session->type,
-							       inst->strip_permanent_identity_hint);
-			}
+			REDEBUG("EAP-Response/SIM/Start does not contain AT_IDENTITY");
+			return common_failure_notification_enter(inst, request, eap_session);
 		}
+
+		/*
+		 *	Add ID hint attributes to the request to help
+		 *	the user make policy decisions.
+		 */
+		identity_hint_pairs_add(&type, NULL, request, id->vp_strvalue);
+		if (type == AKA_SIM_ID_TYPE_PERMANENT) {
+			identity_to_permanent_identity(request, id,
+						       eap_aka_sim_session->type,
+						       inst->strip_permanent_identity_hint);
+		}
+
+		/*
+		 *	Update cryptographic identity
+		 */
+		identity_to_crypto_identity(request, eap_aka_sim_session,
+					    (uint8_t const *)id->vp_strvalue, id->vp_length);
 
 		return unlang_module_yield_to_section(request,
 						      inst->actions.sim.recv_sim_start_response?
@@ -4000,23 +3996,6 @@ static rlm_rcode_t common_eap_identity_resume(void *instance, UNUSED void *threa
 	if (eap_aka_sim_session->id_req != AKA_SIM_NO_ID_REQ) return common_identity_enter(inst, request, eap_session);
 
 	/*
-	 *	If we're not requesting the identity, then
-	 *	whatever we got in the EAP-Identity-Response
-	 *	is used to provide input to the KDF and
-	 *	we enter the challenge phase.
-	 *
-	 *	We don't provide the user an opportunity to
-	 *	change this identity, as the RFCs are very
-	 *	explicit about it either being the value
-	 *	from AT_IDENTITY, OR the value from the
-	 *	EAP-Identity-Response.
-	 */
-	rad_assert(!eap_aka_sim_session->keys.identity && (eap_aka_sim_session->keys.identity_len == 0));
-	eap_aka_sim_session->keys.identity_len = talloc_array_length(eap_session->identity) - 1;
-	MEM(eap_aka_sim_session->keys.identity = talloc_memdup(eap_aka_sim_session, eap_session->identity,
-							       eap_aka_sim_session->keys.identity_len));
-
-	/*
 	 *	If the identity looks like a fast re-auth id
 	 *	run fast re-auth, otherwise do a fullauth.
 	 */
@@ -4066,9 +4045,12 @@ static int _eap_aka_sim_session_free(eap_aka_sim_session_t *eap_aka_sim_session)
  */
 rlm_rcode_t aka_sim_state_machine_start(void *instance, UNUSED void *thread, REQUEST *request)
 {
-	eap_aka_sim_common_conf_t *inst = talloc_get_type_abort(instance, eap_aka_sim_common_conf_t);
-	eap_session_t		*eap_session = eap_session_get(request->parent);
-	eap_aka_sim_session_t	*eap_aka_sim_session;
+	eap_aka_sim_common_conf_t	*inst = talloc_get_type_abort(instance, eap_aka_sim_common_conf_t);
+	eap_session_t			*eap_session = eap_session_get(request->parent);
+	eap_aka_sim_session_t		*eap_aka_sim_session;
+	VALUE_PAIR			*vp;
+	fr_aka_sim_id_type_t		type;
+
 
 	MEM(eap_aka_sim_session = talloc_zero(eap_session, eap_aka_sim_session_t));
 	talloc_set_destructor(eap_aka_sim_session, _eap_aka_sim_session_free);
@@ -4082,30 +4064,40 @@ rlm_rcode_t aka_sim_state_machine_start(void *instance, UNUSED void *thread, REQ
 	eap_aka_sim_session->id = (fr_rand() & 0xff);
 
 	/*
+	 *	Verify we received an EAP-Response/Identity
+	 *	message before the supplicant started sending
+	 *	EAP-SIM/AKA/AKA' packets.
+	 */
+	if (!eap_session->identity) {
+		REDEBUG("All SIM or AKA exchanges must begin with a EAP-Response/Identity message");
+		return common_failure_notification_enter(inst, request, eap_session);
+	}
+
+	/*
 	 *	Add ID hint attributes to the request to help
 	 *	the user make policy decisions.
 	 */
-	if (eap_session->identity) {
-		VALUE_PAIR			*vp;
-		fr_aka_sim_id_type_t		type;
 
-		/*
-		 *	Copy the EAP-Identity into and Identity
-		 *	attribute to make policies easier.
-		 */
-		MEM(pair_add_request(&vp, attr_eap_aka_sim_identity) >= 0);
-		fr_pair_value_bstrncpy(vp, eap_session->identity, talloc_array_length(eap_session->identity) - 1);
+	/*
+	 *	Copy the EAP-Identity into and Identity
+	 *	attribute to make policies easier.
+	 */
+	MEM(pair_add_request(&vp, attr_eap_aka_sim_identity) >= 0);
+	fr_pair_value_bstrncpy(vp, eap_session->identity, talloc_array_length(eap_session->identity) - 1);
 
-		/*
-		 *	Add ID hint attributes to the request to help
-		 *	the user make policy decisions.
-		 */
-		identity_hint_pairs_add(&type, NULL, request, eap_session->identity);
-		if (type == AKA_SIM_ID_TYPE_PERMANENT) {
-			identity_to_permanent_identity(request, vp, eap_session->type,
-						       inst->strip_permanent_identity_hint);
-		}
+	/*
+	 *	Add ID hint attributes to the request to help
+	 *	the user make policy decisions.
+	 */
+	identity_hint_pairs_add(&type, NULL, request, eap_session->identity);
+	if (type == AKA_SIM_ID_TYPE_PERMANENT) {
+		identity_to_permanent_identity(request, vp, eap_session->type,
+					       inst->strip_permanent_identity_hint);
 	}
+
+	identity_to_crypto_identity(request, eap_aka_sim_session,
+				    (uint8_t const *)eap_session->identity,
+				    talloc_array_length(eap_session->identity) - 1);
 
 	/*
 	 *	Running the same section as Identity-Response
