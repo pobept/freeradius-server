@@ -50,6 +50,7 @@ extern fr_dict_attr_t const *attr_eap_aka_sim_ik;
 extern fr_dict_attr_t const *attr_eap_aka_sim_iv;
 extern fr_dict_attr_t const *attr_eap_aka_sim_k_re;
 extern fr_dict_attr_t const *attr_eap_aka_sim_kc;
+extern fr_dict_attr_t const *attr_eap_aka_sim_kdf_identity;
 extern fr_dict_attr_t const *attr_eap_aka_sim_kdf_input;
 extern fr_dict_attr_t const *attr_eap_aka_sim_kdf;
 extern fr_dict_attr_t const *attr_eap_aka_sim_mac;

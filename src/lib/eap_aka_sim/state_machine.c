@@ -1121,8 +1121,26 @@ static rlm_rcode_t common_reauthentication_request_compose(eap_aka_sim_common_co
 									     eap_aka_sim_session_t);
 	VALUE_PAIR		*to_peer = request->reply->vps, *vp;
 
-	RDEBUG2("Generating new session keys");
+	VALUE_PAIR		*kdf_id;
 
+	/*
+	 *	Allow override of KDF Identity
+	 *
+	 *	Because certain handset manufacturers don't
+	 *	implement RFC 4187 correctly and use the
+	 *	wrong identity as input the the PRF/KDF.
+	 *
+	 *	Not seen any doing this for re-authentication
+	 *	but you never know...
+	 */
+	kdf_id = fr_pair_find_by_da(request->control, attr_eap_aka_sim_kdf_identity, TAG_ANY);
+	if (kdf_id) {
+		identity_to_crypto_identity(request, eap_aka_sim_session,
+					    (uint8_t const *)kdf_id->vp_strvalue, kdf_id->vp_length);
+		fr_pair_delete_by_da(&request->control, attr_eap_aka_sim_kdf_identity);
+	}
+
+	RDEBUG2("Generating new session keys");
 
 	switch (eap_aka_sim_session->type) {
 	/*
@@ -1292,6 +1310,22 @@ static rlm_rcode_t aka_challenge_request_compose(eap_aka_sim_common_conf_t *inst
 	eap_aka_sim_session_t	*eap_aka_sim_session = talloc_get_type_abort(eap_session->opaque, eap_aka_sim_session_t);
 	VALUE_PAIR		*to_peer = request->reply->vps, *vp;
 	fr_aka_sim_vector_src_t	src = AKA_SIM_VECTOR_SRC_AUTO;
+
+	VALUE_PAIR		*kdf_id;
+
+	/*
+	 *	Allow override of KDF Identity
+	 *
+	 *	Because certain handset manufacturers don't
+	 *	implement RFC 4187 correctly and use the
+	 *	wrong identity as input the the PRF/KDF.
+	 */
+	kdf_id = fr_pair_find_by_da(request->control, attr_eap_aka_sim_kdf_identity, TAG_ANY);
+	if (kdf_id) {
+		identity_to_crypto_identity(request, eap_aka_sim_session,
+					    (uint8_t const *)kdf_id->vp_strvalue, kdf_id->vp_length);
+		fr_pair_delete_by_da(&request->control, attr_eap_aka_sim_kdf_identity);
+	}
 
 	RDEBUG2("Acquiring UMTS vector(s)");
 
@@ -1479,6 +1513,22 @@ static rlm_rcode_t sim_challenge_request_compose(eap_aka_sim_common_conf_t *inst
 									     eap_aka_sim_session_t);
 	VALUE_PAIR		*to_peer = request->reply->vps, *vp;
 	fr_aka_sim_vector_src_t	src = AKA_SIM_VECTOR_SRC_AUTO;
+
+	VALUE_PAIR		*kdf_id;
+
+	/*
+	 *	Allow override of KDF Identity
+	 *
+	 *	Because certain handset manufacturers don't
+	 *	implement RFC 4187 correctly and use the
+	 *	wrong identity as input the the PRF/KDF.
+	 */
+	kdf_id = fr_pair_find_by_da(request->control, attr_eap_aka_sim_kdf_identity, TAG_ANY);
+	if (kdf_id) {
+		identity_to_crypto_identity(request, eap_aka_sim_session,
+					    (uint8_t const *)kdf_id->vp_strvalue, kdf_id->vp_length);
+		fr_pair_delete_by_da(&request->control, attr_eap_aka_sim_kdf_identity);
+	}
 
 	RDEBUG2("Acquiring GSM vector(s)");
 	if ((fr_aka_sim_vector_gsm_from_attrs(request, request->control, 0,
