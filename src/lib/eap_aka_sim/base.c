@@ -73,6 +73,7 @@ fr_dict_attr_t const *attr_eap_aka_sim_ik;
 fr_dict_attr_t const *attr_eap_aka_sim_iv;
 fr_dict_attr_t const *attr_eap_aka_sim_k_re;
 fr_dict_attr_t const *attr_eap_aka_sim_kc;
+fr_dict_attr_t const *attr_eap_aka_sim_kdf_identity;
 fr_dict_attr_t const *attr_eap_aka_sim_kdf_input;
 fr_dict_attr_t const *attr_eap_aka_sim_kdf;
 fr_dict_attr_t const *attr_eap_aka_sim_mac;
