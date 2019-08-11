@@ -345,6 +345,60 @@ void		unlang_xlat_push(TALLOC_CTX *ctx, fr_value_box_t **out,
 xlat_action_t	unlang_xlat_yield(REQUEST *request,
 				  xlat_func_resume_t callback, xlat_func_signal_t signal,
 				  void *rctx);
+
+/*
+ *	xlat_tmpl.c
+ */
+
+/** xlat function which return literal bind placeholeder for SQL query
+ *
+ * @param[in] ctx		to allocate any dynamic buffers in.
+ * @param[in] pos		bind position
+ * @param[in] type		value type (fr_value_box_t)
+ * @param[in,out] out		Where to write either a pointer to a new buffer,
+ *				or data to an existing buffer.
+ * @param[in] outlen		Length of pre-allocated buffer, or 0 if function should
+ *				allocate its own buffer.
+ *
+ * @return
+ *	- 0 on success.
+ *	- -1 on failure.
+ */
+typedef int (*xlat_tmpl_bind_ph_t)(TALLOC_CTX *ctx, int pos, int type, char **out, size_t outlen);
+  
+/** Make xlat template
+ *
+ * @param[in] ctx		to allocate dynamic buffers in.
+ * @param[out] out		Where to write the query literals and bind place holders.
+ * @param[in] fmt		the format string to expand.
+ * @param[in] bind_ph		function to get literal text bind placeholder.
+ * @param[out] tmpl		the head of the xlat list / tree structure.
+ * @return
+ *	- <=0 on error.
+ *	- >0 on success.
+ */
+int		xlat_tmpl(TALLOC_CTX *ctx, char **out, char const *fmt, xlat_tmpl_bind_ph_t bind_ph, xlat_exp_t **tmpl)
+			CC_HINT(nonnull (2,3));
+
+/** xlat sql bind callback function
+ *
+ * @param[in] request		the request.
+ * @param[in] pos		bind position in query
+ * @param[in] value		pointer to value
+ * @param[in] binx_ctx		bind context to allocate buffers in
+ * @return
+ *	- 0 on success.
+ *	- -1 on failure.
+ */
+typedef int (*xlat_sql_bind_t)(REQUEST *request, int pos, void *value, void const *bind_ctx);
+
+/**
+ *
+ */
+size_t 	xlat_process_sql_bind(TALLOC_CTX *ctx, REQUEST *request, xlat_exp_t const * head, 
+			xlat_sql_bind_t bind, void const *bind_ctx);
+
+
 #ifdef __cplusplus
 }
 #endif

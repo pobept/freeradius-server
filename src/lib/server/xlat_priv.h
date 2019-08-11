@@ -149,6 +149,15 @@ xlat_t	*xlat_func_find(char const *name);
 /*
  *	xlat_eval.c
  */
+
+char *xlat_aprint(TALLOC_CTX *ctx, REQUEST *request, xlat_exp_t const * const node,
+			 xlat_escape_t escape, void const *escape_ctx,
+#ifndef DEBUG_XLAT
+			 UNUSED
+#endif
+			 int lvl);
+
+
 void		xlat_signal(xlat_func_signal_t signal, xlat_exp_t const *exp,
 			    REQUEST *request, void *rctx, fr_state_signal_t action);
 

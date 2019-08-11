@@ -1091,7 +1091,7 @@ finish:
 	return xa;
 }
 
-static char *xlat_aprint(TALLOC_CTX *ctx, REQUEST *request, xlat_exp_t const * const node,
+char *xlat_aprint(TALLOC_CTX *ctx, REQUEST *request, xlat_exp_t const * const node,
 			 xlat_escape_t escape, void const *escape_ctx,
 #ifndef DEBUG_XLAT
 			 UNUSED

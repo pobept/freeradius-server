@@ -39,7 +39,8 @@ SOURCES	:= \
 	xlat_eval.c \
 	xlat_func.c \
 	xlat_inst.c \
-	xlat_tokenize.c
+	xlat_tokenize.c \
+	xlat_tmpl.c
 
 HEADERS		:= $(subst src/lib/,,$(wildcard src/lib/server/*.h))
 
